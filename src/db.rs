@@ -67,9 +67,6 @@ impl Database {
         // Asset indices
         let asset_indices = vec![
             IndexModel::builder()
-                .keys(bson::doc! { "asset_type": 1 })
-                .build(),
-            IndexModel::builder()
                 .keys(bson::doc! { "tags.category": 1, "tags.value": 1 })
                 .build(),
             IndexModel::builder()
