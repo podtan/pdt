@@ -53,6 +53,7 @@ pub struct Tag {
     pub category: TagCategory,
     pub value: String,
     pub added_by: String,
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub added_at: DateTime<Utc>,
 }
 

@@ -22,7 +22,9 @@ pub struct Asset {
     pub tags: Vec<Tag>,          // Asset type is determined by tags with category AssetType
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub created_at: DateTime<Utc>,
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub updated_at: DateTime<Utc>,
     pub created_by: String,
     #[serde(skip_serializing_if = "Option::is_none")]

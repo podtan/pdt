@@ -17,7 +17,9 @@ pub struct Collection {
     pub tags: Vec<Tag>,
     #[serde(default)]
     pub asset_ids: Vec<String>,
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub created_at: DateTime<Utc>,
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub updated_at: DateTime<Utc>,
     pub created_by: String,
 }

@@ -98,7 +98,7 @@ impl AssetService {
         AssetRepository::get_by_id(db, id).await?;
 
         // Delete asset
-        AssetRepository::delete(db, id).await?;
+        AssetRepository::soft_delete(db, id).await?;
 
         // Delete related relations
         RelationRepository::delete_by_asset(db, id).await?;

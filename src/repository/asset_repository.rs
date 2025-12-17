@@ -55,7 +55,7 @@ impl AssetRepository {
     pub async fn get_by_id(db: &Database, id: &str) -> Result<Asset> {
         let filter = doc! {
             "_id": id,
-            "deleted_at": null
+            "deleted_at": { "$exists": false }
         };
 
         db.assets()
@@ -100,7 +100,7 @@ impl AssetRepository {
 
         let filter = doc! {
             "_id": id,
-            "deleted_at": null
+            "deleted_at": { "$exists": false }
         };
 
         db.assets().update_one(filter, update_doc).await?;
@@ -109,10 +109,10 @@ impl AssetRepository {
     }
 
     /// Soft delete an asset
-    pub async fn delete(db: &Database, id: &str) -> Result<()> {
+    pub async fn soft_delete(db: &Database, id: &str) -> Result<()> {
         let filter = doc! {
             "_id": id,
-            "deleted_at": null
+            "deleted_at": { "$exists": false }
         };
 
         let update = doc! {
@@ -138,7 +138,7 @@ impl AssetRepository {
         cursor: Option<&str>,
         asset_type_tag: Option<&str>,
     ) -> Result<(Vec<Asset>, Option<String>)> {
-        let mut filter = doc! { "deleted_at": null };
+        let mut filter = doc! { "deleted_at": { "$exists": false } };
 
         // Filter by asset type tag if specified
         if let Some(at) = asset_type_tag {
@@ -233,7 +233,7 @@ impl AssetRepository {
         limit: i64,
         cursor: Option<&str>,
     ) -> Result<(Vec<Asset>, Option<String>)> {
-        let mut filter = doc! { "deleted_at": null };
+        let mut filter = doc! { "deleted_at": { "$exists": false } };
 
         if let Some(q) = query {
             if !q.is_empty() {

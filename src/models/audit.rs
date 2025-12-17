@@ -44,5 +44,6 @@ pub struct AuditEntry {
     pub action: AuditAction,
     pub changes: serde_json::Value,
     pub user_id: String,
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub timestamp: DateTime<Utc>,
 }
