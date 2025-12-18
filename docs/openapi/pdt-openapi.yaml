@@ -1,0 +1,1026 @@
+openapi: 3.0.3
+info:
+  title: Platform Data Toolkit (PDT) API
+  description: |
+    PDT is a centralized API server that serves as an enterprise knowledge silo for company-specific concepts, documents, and their relationships.
+
+    ## Features
+
+    - **Knowledge Asset Management**: Store and manage knowledge assets with rich metadata
+    - **Tag-Based Classification**: Multi-dimensional tagging including asset type, business domain, language, etc.
+    - **Graph-Based Relationships**: Define and traverse relationships between assets
+    - **Concept Collections**: Organize assets into named collections
+    - **Search & Discovery**: Full-text search and tag-based filtering
+    - **Audit Logging**: Track all changes with user attribution
+  version: 1.0.0
+  contact:
+    name: PDT Team
+  license:
+    name: MIT OR Apache-2.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+  - url: https://api.pdt.company.com
+    description: Production server
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Check if the PDT service is running and healthy
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /api/assets:
+    post:
+      summary: Create a new asset
+      description: Create a new knowledge asset with tags and metadata
+      operationId: createAsset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAssetRequest'
+      responses:
+        '201':
+          description: Asset created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '400':
+          description: Invalid request data
+        '500':
+          description: Internal server error
+    get:
+      summary: List assets
+      description: Retrieve a paginated list of assets with optional filtering
+      operationId: listAssets
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Number of assets to return
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Cursor for pagination
+        - name: asset_type
+          in: query
+          schema:
+            type: string
+            enum: [document, concept, idea, data_entity, reference]
+          description: Filter by asset type tag value
+      responses:
+        '200':
+          description: List of assets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAssetResponse'
+
+  /api/assets/{id}:
+    get:
+      summary: Get asset by ID
+      description: Retrieve a specific asset by its ID
+      operationId: getAsset
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Asset ID
+      responses:
+        '200':
+          description: Asset found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '404':
+          description: Asset not found
+    put:
+      summary: Update asset
+      description: Update an existing asset's title, content, or metadata
+      operationId: updateAsset
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Asset ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAssetRequest'
+      responses:
+        '200':
+          description: Asset updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '404':
+          description: Asset not found
+    delete:
+      summary: Delete asset (soft delete)
+      description: Soft delete an asset (marks as deleted but keeps in database)
+      operationId: deleteAsset
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Asset ID
+      responses:
+        '204':
+          description: Asset deleted successfully
+        '404':
+          description: Asset not found
+
+  /api/assets/{id}/tags:
+    post:
+      summary: Add tag to asset
+      description: Add a classification tag to an existing asset
+      operationId: addAssetTag
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Asset ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddTagRequest'
+      responses:
+        '200':
+          description: Tag added successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '404':
+          description: Asset not found
+
+  /api/assets/{id}/tags/{tag_id}:
+    delete:
+      summary: Remove tag from asset
+      description: Remove a specific tag from an asset
+      operationId: removeAssetTag
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Asset ID
+        - name: tag_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Tag ID
+      responses:
+        '200':
+          description: Tag removed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '404':
+          description: Asset or tag not found
+
+  /api/relations:
+    post:
+      summary: Create relation
+      description: Create a relationship between two assets
+      operationId: createRelation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRelationRequest'
+      responses:
+        '201':
+          description: Relation created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Relation'
+        '400':
+          description: Invalid request data
+        '404':
+          description: One or both assets not found
+
+  /api/relations/{id}:
+    get:
+      summary: Get relation by ID
+      description: Retrieve a specific relation by its ID
+      operationId: getRelation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Relation ID
+      responses:
+        '200':
+          description: Relation found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Relation'
+        '404':
+          description: Relation not found
+    delete:
+      summary: Delete relation
+      description: Delete a relationship between assets
+      operationId: deleteRelation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Relation ID
+      responses:
+        '204':
+          description: Relation deleted successfully
+        '404':
+          description: Relation not found
+
+  /api/assets/{id}/relations:
+    get:
+      summary: Get asset relations
+      description: Get all relations for a specific asset
+      operationId: getAssetRelations
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Asset ID
+        - name: direction
+          in: query
+          schema:
+            type: string
+            enum: [incoming, outgoing, both]
+            default: both
+          description: Direction of relations to retrieve
+      responses:
+        '200':
+          description: List of relations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Relation'
+
+  /api/assets/{id}/graph:
+    get:
+      summary: Traverse relationship graph
+      description: Traverse the relationship graph starting from an asset
+      operationId: traverseGraph
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Starting asset ID
+        - name: depth
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+            default: 2
+          description: Maximum traversal depth
+        - name: relation_types
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [contains, references, related_to, depends_on, supersedes, complements]
+          description: Filter by relation types
+      responses:
+        '200':
+          description: Graph traversal result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Asset'
+                  edges:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Relation'
+
+  /api/collections:
+    post:
+      summary: Create collection
+      description: Create a new named collection of assets
+      operationId: createCollection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCollectionRequest'
+      responses:
+        '201':
+          description: Collection created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+    get:
+      summary: List collections
+      description: Retrieve a paginated list of collections
+      operationId: listCollections
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Number of collections to return
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Cursor for pagination
+      responses:
+        '200':
+          description: List of collections
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCollectionResponse'
+
+  /api/collections/{id}:
+    get:
+      summary: Get collection by ID
+      description: Retrieve a specific collection by its ID
+      operationId: getCollection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Collection ID
+      responses:
+        '200':
+          description: Collection found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '404':
+          description: Collection not found
+    put:
+      summary: Update collection
+      description: Update a collection's name or description
+      operationId: updateCollection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Collection ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCollectionRequest'
+      responses:
+        '200':
+          description: Collection updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '404':
+          description: Collection not found
+    delete:
+      summary: Delete collection
+      description: Delete a collection and remove all asset associations
+      operationId: deleteCollection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Collection ID
+      responses:
+        '204':
+          description: Collection deleted successfully
+        '404':
+          description: Collection not found
+
+  /api/collections/{id}/assets:
+    post:
+      summary: Add asset to collection
+      description: Add an existing asset to a collection
+      operationId: addAssetToCollection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Collection ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddAssetToCollectionRequest'
+      responses:
+        '200':
+          description: Asset added to collection successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '404':
+          description: Collection or asset not found
+
+  /api/collections/{id}/assets/{asset_id}:
+    delete:
+      summary: Remove asset from collection
+      description: Remove an asset from a collection
+      operationId: removeAssetFromCollection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Collection ID
+        - name: asset_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Asset ID
+      responses:
+        '200':
+          description: Asset removed from collection successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        '404':
+          description: Collection or asset not found
+
+  /api/search:
+    get:
+      summary: Search assets
+      description: Full-text search assets with tag-based filtering
+      operationId: searchAssets
+      parameters:
+        - name: q
+          in: query
+          schema:
+            type: string
+          description: Full-text search query
+        - name: tags
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: false
+          description: Tag filters in format "category:value" (e.g., "asset_type:document")
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Number of results to return
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Cursor for pagination
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAssetResponse'
+
+  /api/audit:
+    get:
+      summary: List audit entries
+      description: Retrieve audit log entries for tracking changes
+      operationId: listAuditEntries
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Number of entries to return
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Cursor for pagination
+        - name: asset_id
+          in: query
+          schema:
+            type: string
+          description: Filter by asset ID
+        - name: user_id
+          in: query
+          schema:
+            type: string
+          description: Filter by user ID
+        - name: action
+          in: query
+          schema:
+            type: string
+            enum: [create, update, delete, tag_add, tag_remove]
+          description: Filter by action type
+      responses:
+        '200':
+          description: List of audit entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAuditResponse'
+
+  /api/assets/{id}/history:
+    get:
+      summary: Get asset change history
+      description: Retrieve the change history for a specific asset
+      operationId: getAssetHistory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Asset ID
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Number of history entries to return
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Cursor for pagination
+      responses:
+        '200':
+          description: Asset change history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAuditResponse'
+
+components:
+  schemas:
+    Asset:
+      type: object
+      required:
+        - id
+        - title
+        - created_at
+        - updated_at
+        - created_by
+      properties:
+        id:
+          type: string
+          description: Unique asset identifier
+          example: "507f1f77bcf86cd799439011"
+        title:
+          type: string
+          description: Asset title
+          example: "User Authentication Design Document"
+        content:
+          type: string
+          description: Asset content (markdown, text, etc.)
+          example: "# User Authentication\n\nThis document describes..."
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+          description: Classification tags
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional metadata as key-value pairs
+        created_at:
+          type: string
+          format: date-time
+          description: Creation timestamp
+        updated_at:
+          type: string
+          format: date-time
+          description: Last update timestamp
+        created_by:
+          type: string
+          description: User who created the asset
+          example: "john.doe@company.com"
+        deleted_at:
+          type: string
+          format: date-time
+          description: Soft delete timestamp (null if not deleted)
+
+    CreateAssetRequest:
+      type: object
+      required:
+        - title
+      properties:
+        title:
+          type: string
+          description: Asset title
+          example: "User Authentication Design Document"
+        content:
+          type: string
+          description: Asset content
+          example: "# User Authentication\n\nThis document describes..."
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/AddTagRequest'
+          description: Initial classification tags (should include asset_type)
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional metadata
+
+    UpdateAssetRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          description: New asset title
+        content:
+          type: string
+          description: New asset content
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Updated metadata
+
+    Tag:
+      type: object
+      required:
+        - id
+        - category
+        - value
+        - added_by
+        - added_at
+      properties:
+        id:
+          type: string
+          description: Unique tag identifier
+        category:
+          $ref: '#/components/schemas/TagCategory'
+        value:
+          type: string
+          description: Tag value
+          example: "document"
+        added_by:
+          type: string
+          description: User who added the tag
+        added_at:
+          type: string
+          format: date-time
+          description: When the tag was added
+
+    TagCategory:
+      type: string
+      enum:
+        - asset_type
+        - business_domain
+        - language
+        - content_format
+        - sensitivity_level
+        - source_system
+        - structural_type
+        - target_user_type
+        - quality_status
+      description: |
+        Tag categories for multi-dimensional classification:
+
+        - `asset_type`: Asset type (document, concept, idea, data_entity, reference)
+        - `business_domain`: Business domain (Marketing, Finance, Legal, etc.)
+        - `language`: Content language (English, Farsi, etc.)
+        - `content_format`: Content format (markdown, structured data, etc.)
+        - `sensitivity_level`: Sensitivity level (public, internal, confidential)
+        - `source_system`: Source system or origin
+        - `structural_type`: Structural type (structured, semi-structured, unstructured)
+        - `target_user_type`: Target user type (analysts, developers, executives)
+        - `quality_status`: Quality status (draft, reviewed, approved)
+
+    AddTagRequest:
+      type: object
+      required:
+        - category
+        - value
+      properties:
+        category:
+          $ref: '#/components/schemas/TagCategory'
+        value:
+          type: string
+          description: Tag value
+          example: "document"
+
+    Relation:
+      type: object
+      required:
+        - id
+        - from_asset_id
+        - to_asset_id
+        - relation_type
+        - created_at
+        - created_by
+      properties:
+        id:
+          type: string
+          description: Unique relation identifier
+        from_asset_id:
+          type: string
+          description: Source asset ID
+        to_asset_id:
+          type: string
+          description: Target asset ID
+        relation_type:
+          $ref: '#/components/schemas/RelationType'
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional metadata
+        created_at:
+          type: string
+          format: date-time
+          description: Creation timestamp
+        created_by:
+          type: string
+          description: User who created the relation
+
+    RelationType:
+      type: string
+      enum:
+        - contains
+        - references
+        - related_to
+        - depends_on
+        - supersedes
+        - complements
+      description: |
+        Types of relationships between assets:
+
+        - `contains`: Asset includes other assets
+        - `references`: Asset cites or links to another
+        - `related_to`: General associations between assets
+        - `depends_on`: Required relationships for asset validity
+        - `supersedes`: Asset replaces or updates another
+        - `complements`: Assets enhance each other's value
+
+    CreateRelationRequest:
+      type: object
+      required:
+        - from_asset_id
+        - to_asset_id
+        - relation_type
+      properties:
+        from_asset_id:
+          type: string
+          description: Source asset ID
+        to_asset_id:
+          type: string
+          description: Target asset ID
+        relation_type:
+          $ref: '#/components/schemas/RelationType'
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Additional metadata
+
+    Collection:
+      type: object
+      required:
+        - id
+        - name
+        - created_at
+        - updated_at
+        - created_by
+      properties:
+        id:
+          type: string
+          description: Unique collection identifier
+        name:
+          type: string
+          description: Collection name
+          example: "Authentication Concepts"
+        description:
+          type: string
+          description: Collection description
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+          description: Collection classification tags
+        asset_ids:
+          type: array
+          items:
+            type: string
+          description: IDs of assets in this collection
+        created_at:
+          type: string
+          format: date-time
+          description: Creation timestamp
+        updated_at:
+          type: string
+          format: date-time
+          description: Last update timestamp
+        created_by:
+          type: string
+          description: User who created the collection
+
+    CreateCollectionRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Collection name
+          example: "Authentication Concepts"
+        description:
+          type: string
+          description: Collection description
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/AddTagRequest'
+          description: Initial classification tags
+
+    UpdateCollectionRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: New collection name
+        description:
+          type: string
+          description: New collection description
+
+    AddAssetToCollectionRequest:
+      type: object
+      required:
+        - asset_id
+      properties:
+        asset_id:
+          type: string
+          description: Asset ID to add to collection
+
+    AuditEntry:
+      type: object
+      required:
+        - id
+        - asset_id
+        - action
+        - user_id
+        - timestamp
+      properties:
+        id:
+          type: string
+          description: Unique audit entry identifier
+        asset_id:
+          type: string
+          description: Asset ID that was changed
+        action:
+          type: string
+          enum: [create, update, delete, tag_add, tag_remove]
+          description: Type of action performed
+        user_id:
+          type: string
+          description: User who performed the action
+        timestamp:
+          type: string
+          format: date-time
+          description: When the action occurred
+        details:
+          type: object
+          additionalProperties: true
+          description: Additional action details
+
+    PaginatedAssetResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Asset'
+        next_cursor:
+          type: string
+          description: Cursor for next page (null if no more pages)
+        total:
+          type: integer
+          description: Total number of assets (optional)
+
+    PaginatedCollectionResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Collection'
+        next_cursor:
+          type: string
+          description: Cursor for next page (null if no more pages)
+        total:
+          type: integer
+          description: Total number of collections (optional)
+
+    PaginatedAuditResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEntry'
+        next_cursor:
+          type: string
+          description: Cursor for next page (null if no more pages)
+        total:
+          type: integer
+          description: Total number of audit entries (optional)
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication (if implemented)
+
+# Optional: Add security requirements if authentication is implemented
+# security:
+#   - ApiKeyAuth: []
