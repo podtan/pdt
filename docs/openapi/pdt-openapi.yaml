@@ -734,7 +734,18 @@ components:
           type: string
           description: Unique tag identifier
         category:
-          $ref: '#/components/schemas/TagCategory'
+          type: string
+          description: |
+            Tag category (free-form string). Common categories include:
+            - `type` - Asset type (document, idea, requirement, bug, task)
+            - `status` - Status (draft, review, approved, archived)
+            - `domain` - Business domain (backend, frontend, infra)
+            - `lang` - Language (en, fa)
+            - `priority` - Priority (high, medium, low)
+            - `scope` - Feature/component scope
+          example: "type"
+          pattern: "^[a-zA-Z0-9_/-]+$"
+          maxLength: 64
         value:
           type: string
           description: Tag value
@@ -747,31 +758,6 @@ components:
           format: date-time
           description: When the tag was added
 
-    TagCategory:
-      type: string
-      enum:
-        - asset_type
-        - business_domain
-        - language
-        - content_format
-        - sensitivity_level
-        - source_system
-        - structural_type
-        - target_user_type
-        - quality_status
-      description: |
-        Tag categories for multi-dimensional classification:
-
-        - `asset_type`: Asset type (document, concept, idea, data_entity, reference)
-        - `business_domain`: Business domain (Marketing, Finance, Legal, etc.)
-        - `language`: Content language (English, Farsi, etc.)
-        - `content_format`: Content format (markdown, structured data, etc.)
-        - `sensitivity_level`: Sensitivity level (public, internal, confidential)
-        - `source_system`: Source system or origin
-        - `structural_type`: Structural type (structured, semi-structured, unstructured)
-        - `target_user_type`: Target user type (analysts, developers, executives)
-        - `quality_status`: Quality status (draft, reviewed, approved)
-
     AddTagRequest:
       type: object
       required:
@@ -779,11 +765,23 @@ components:
         - value
       properties:
         category:
-          $ref: '#/components/schemas/TagCategory'
+          type: string
+          description: |
+            Tag category (free-form string). Common categories include:
+            - `type` - Asset type (document, idea, requirement, bug, task)
+            - `status` - Status (draft, review, approved, archived)
+            - `domain` - Business domain (backend, frontend, infra)
+            - `lang` - Language (en, fa)
+            - `priority` - Priority (high, medium, low)
+            - `scope` - Feature/component scope
+          example: "type"
+          pattern: "^[a-zA-Z0-9_/-]+$"
+          maxLength: 64
         value:
           type: string
           description: Tag value
           example: "document"
+          maxLength: 256
 
     Relation:
       type: object

@@ -12,7 +12,7 @@ pub use collection::{
     AddAssetRequest, Collection, CreateCollectionRequest, UpdateCollectionRequest,
 };
 pub use relation::{CreateRelationRequest, Relation, RelationType};
-pub use tag::{AddTagRequest, Tag, TagCategory};
+pub use tag::{AddTagRequest, Tag, validate_category, validate_value};
 
 use serde::{Deserialize, Serialize};
 

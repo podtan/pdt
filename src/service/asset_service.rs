@@ -130,6 +130,9 @@ impl AssetService {
         request: AddTagRequest,
         user_id: &str,
     ) -> Result<Tag> {
+        // Validate the tag request
+        request.validate().map_err(ApiError::Validation)?;
+
         let tag = AssetRepository::add_tag(db, asset_id, request.clone(), user_id).await?;
 
         // Create audit entry
@@ -140,7 +143,7 @@ impl AssetService {
             AuditAction::AddTag,
             json!({
                 "tag_id": tag.id,
-                "category": format!("{}", tag.category),
+                "category": &tag.category,
                 "value": tag.value,
             }),
             user_id,
