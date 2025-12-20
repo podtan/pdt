@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::datetime_format;
+
 /// Types of relationships between assets
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -45,7 +47,7 @@ pub struct Relation {
     pub relation_type: RelationType,
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
-    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    #[serde(with = "datetime_format")]
     pub created_at: DateTime<Utc>,
     pub created_by: String,
 }

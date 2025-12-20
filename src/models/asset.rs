@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::Tag;
+use super::datetime_format;
 
 // Note: Asset types are handled through the tagging system using TagCategory::AssetType
 // rather than a separate enum. This provides more flexibility and consistency.
@@ -22,9 +23,9 @@ pub struct Asset {
     pub tags: Vec<Tag>,          // Asset type is determined by tags with category AssetType
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
-    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    #[serde(with = "datetime_format")]
     pub created_at: DateTime<Utc>,
-    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    #[serde(with = "datetime_format")]
     pub updated_at: DateTime<Utc>,
     pub created_by: String,
     #[serde(skip_serializing_if = "Option::is_none")]

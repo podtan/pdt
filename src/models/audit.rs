@@ -3,6 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::datetime_format;
+
 /// Types of audited actions
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +46,6 @@ pub struct AuditEntry {
     pub action: AuditAction,
     pub changes: serde_json::Value,
     pub user_id: String,
-    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    #[serde(with = "datetime_format")]
     pub timestamp: DateTime<Utc>,
 }

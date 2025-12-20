@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::Tag;
+use super::datetime_format;
 
 /// Named collection of assets
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,9 +18,9 @@ pub struct Collection {
     pub tags: Vec<Tag>,
     #[serde(default)]
     pub asset_ids: Vec<String>,
-    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    #[serde(with = "datetime_format")]
     pub created_at: DateTime<Utc>,
-    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    #[serde(with = "datetime_format")]
     pub updated_at: DateTime<Utc>,
     pub created_by: String,
 }
