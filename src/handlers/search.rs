@@ -7,14 +7,21 @@ use axum::{
 use serde::Deserialize;
 
 use crate::error::Result;
-use crate::models::{Asset, PaginatedResponse, PaginationParams};
+use crate::models::{Asset, PaginatedResponse};
 use crate::service::{SearchService, Services};
 
+fn default_limit() -> i64 {
+    20
+}
+
 /// Query parameters for search
+/// Note: pagination fields inlined to work around serde_urlencoded#33 (flatten breaks numeric deserialize)
 #[derive(Debug, Deserialize)]
 pub struct SearchParams {
-    #[serde(flatten)]
-    pub pagination: PaginationParams,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub cursor: Option<String>,
     pub q: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -43,8 +50,8 @@ pub async fn search(
         services.db(),
         params.q.as_deref(),
         tag_filters,
-        params.pagination.limit,
-        params.pagination.cursor.as_deref(),
+        params.limit,
+        params.cursor.as_deref(),
     )
     .await?;
 

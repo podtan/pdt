@@ -7,14 +7,21 @@ use axum::{
 use serde::Deserialize;
 
 use crate::error::Result;
-use crate::models::{AuditEntry, PaginatedResponse, PaginationParams};
+use crate::models::{AuditEntry, PaginatedResponse};
 use crate::service::{AuditService, Services};
 
+fn default_limit() -> i64 {
+    20
+}
+
 /// Query parameters for audit list
+/// Note: pagination fields inlined to work around serde_urlencoded#33 (flatten breaks numeric deserialize)
 #[derive(Debug, Deserialize)]
 pub struct AuditListParams {
-    #[serde(flatten)]
-    pub pagination: PaginationParams,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub cursor: Option<String>,
     pub entity_type: Option<String>,
     pub entity_id: Option<String>,
     pub user_id: Option<String>,
@@ -41,8 +48,8 @@ pub async fn list_audit_entries(
         params.entity_type.as_deref(),
         params.entity_id.as_deref(),
         params.user_id.as_deref(),
-        params.pagination.limit,
-        params.pagination.cursor.as_deref(),
+        params.limit,
+        params.cursor.as_deref(),
     )
     .await?;
 

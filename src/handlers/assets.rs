@@ -8,16 +8,23 @@ use serde::Deserialize;
 
 use crate::error::Result;
 use crate::models::{
-    AddTagRequest, Asset, CreateAssetRequest, PaginatedResponse, PaginationParams, Tag,
+    AddTagRequest, Asset, CreateAssetRequest, PaginatedResponse, Tag,
     UpdateAssetRequest,
 };
 use crate::service::{AssetService, Services};
 
+fn default_limit() -> i64 {
+    20
+}
+
 /// Query parameters for listing assets
+/// Note: pagination fields inlined to work around serde_urlencoded#33 (flatten breaks numeric deserialize)
 #[derive(Debug, Deserialize)]
 pub struct ListAssetsParams {
-    #[serde(flatten)]
-    pub pagination: PaginationParams,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub cursor: Option<String>,
     /// Filter by asset type tag value (e.g., "document", "concept", "idea")
     pub asset_type: Option<String>,
 }
@@ -75,8 +82,8 @@ pub async fn list_assets(
 ) -> Result<Json<PaginatedResponse<Asset>>> {
     let (assets, next_cursor) = AssetService::list(
         services.db(),
-        params.pagination.limit,
-        params.pagination.cursor.as_deref(),
+        params.limit,
+        params.cursor.as_deref(),
         params.asset_type.as_deref(),
     )
     .await?;
