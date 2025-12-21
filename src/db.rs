@@ -18,7 +18,7 @@ pub struct Database {
 impl Database {
     /// Connect to the database
     pub async fn connect(config: &DatabaseConfig) -> Result<Self> {
-        let mut options = ClientOptions::parse(&config.connection_string()).await?;
+        let mut options = ClientOptions::parse(config.connection_string()).await?;
 
         // Set credentials
         options.credential = Some(
@@ -97,14 +97,14 @@ impl Database {
 
         // Collection indices
         let collection_indices = vec![
-            IndexModel::builder()
-                .keys(bson::doc! { "name": 1 })
-                .build(),
+            IndexModel::builder().keys(bson::doc! { "name": 1 }).build(),
             IndexModel::builder()
                 .keys(bson::doc! { "asset_ids": 1 })
                 .build(),
         ];
-        self.collections().create_indexes(collection_indices).await?;
+        self.collections()
+            .create_indexes(collection_indices)
+            .await?;
 
         // Audit indices
         let audit_indices = vec![

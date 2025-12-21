@@ -65,11 +65,7 @@ impl AssetRepository {
     }
 
     /// Update an asset
-    pub async fn update(
-        db: &Database,
-        id: &str,
-        request: UpdateAssetRequest,
-    ) -> Result<Asset> {
+    pub async fn update(db: &Database, id: &str, request: UpdateAssetRequest) -> Result<Asset> {
         let mut update_doc = doc! {
             "$set": {
                 "updated_at": Utc::now()
@@ -241,16 +237,19 @@ impl AssetRepository {
             }
         }
 
-        for (category, value) in tag_filters {
-            filter.insert(
-                "tags",
-                doc! {
-                    "$elemMatch": {
-                        "category": category,
-                        "value": value
+        if !tag_filters.is_empty() {
+            let mut tag_conditions = Vec::new();
+            for (category, value) in tag_filters {
+                tag_conditions.push(doc! {
+                    "tags": {
+                        "$elemMatch": {
+                            "category": category,
+                            "value": value
+                        }
                     }
-                },
-            );
+                });
+            }
+            filter.insert("$and", tag_conditions);
         }
 
         if let Some(c) = cursor {

@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use super::Tag;
 use super::datetime_format;
+use super::Tag;
 
 // Note: Asset types are handled through the tagging system using TagCategory::AssetType
 // rather than a separate enum. This provides more flexibility and consistency.
@@ -20,7 +20,7 @@ pub struct Asset {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(default)]
-    pub tags: Vec<Tag>,          // Asset type is determined by tags with category AssetType
+    pub tags: Vec<Tag>, // Asset type is determined by tags with category AssetType
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
     #[serde(with = "datetime_format")]
@@ -40,7 +40,7 @@ pub struct CreateAssetRequest {
     #[serde(default)]
     pub content: Option<String>,
     #[serde(default)]
-    pub tags: Vec<super::AddTagRequest>,  // Should include at least one AssetType tag
+    pub tags: Vec<super::AddTagRequest>, // Should include at least one AssetType tag
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
 }

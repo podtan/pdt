@@ -95,9 +95,7 @@ impl IntoResponse for ApiError {
                     "A serialization error occurred".to_string(),
                 )
             }
-            ApiError::Validation(msg) => {
-                (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone())
-            }
+            ApiError::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
         };
 
         let body = ErrorResponse {

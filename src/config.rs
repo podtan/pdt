@@ -24,18 +24,15 @@ pub struct DatabaseConfig {
 impl DatabaseConfig {
     /// Build MongoDB connection string with authentication and TLS
     pub fn connection_string(&self) -> String {
-        let mut conn = format!(
-            "{}/?authSource=admin",
-            self.url.trim_end_matches('/')
-        );
-        
+        let mut conn = format!("{}/?authSource=admin", self.url.trim_end_matches('/'));
+
         if self.tls {
             conn.push_str("&tls=true");
             if self.tls_allow_invalid {
                 conn.push_str("&tlsAllowInvalidCertificates=true");
             }
         }
-        
+
         conn
     }
 }
@@ -59,8 +56,7 @@ impl Config {
                     .context("Invalid PDT_PORT")?,
             },
             database: DatabaseConfig {
-                url: env::var("DOCUMENTDB_URL")
-                    .context("DOCUMENTDB_URL must be set")?,
+                url: env::var("DOCUMENTDB_URL").context("DOCUMENTDB_URL must be set")?,
                 username: env::var("DOCUMENTDB_USERNAME")
                     .context("DOCUMENTDB_USERNAME must be set")?,
                 password: env::var("DOCUMENTDB_PASSWORD")

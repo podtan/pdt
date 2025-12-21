@@ -7,7 +7,9 @@ use crate::error::{ApiError, Result};
 use crate::models::{
     AddTagRequest, Asset, AuditAction, CreateAssetRequest, Tag, UpdateAssetRequest,
 };
-use crate::repository::{AssetRepository, AuditRepository, CollectionRepository, RelationRepository};
+use crate::repository::{
+    AssetRepository, AuditRepository, CollectionRepository, RelationRepository,
+};
 
 /// Service for asset business logic
 pub struct AssetService;

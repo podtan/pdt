@@ -96,8 +96,15 @@ impl CollectionService {
         CollectionRepository::delete(db, id).await?;
 
         // Create audit entry
-        AuditRepository::create(db, "collection", id, AuditAction::Delete, json!({}), user_id)
-            .await?;
+        AuditRepository::create(
+            db,
+            "collection",
+            id,
+            AuditAction::Delete,
+            json!({}),
+            user_id,
+        )
+        .await?;
 
         Ok(())
     }

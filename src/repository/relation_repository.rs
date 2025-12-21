@@ -137,11 +137,7 @@ impl RelationRepository {
     }
 
     /// Check for cycles that would be created by adding a relation
-    pub async fn would_create_cycle(
-        db: &Database,
-        from_id: &str,
-        to_id: &str,
-    ) -> Result<bool> {
+    pub async fn would_create_cycle(db: &Database, from_id: &str, to_id: &str) -> Result<bool> {
         // Check if there's already a path from to_id to from_id
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<String> = VecDeque::new();

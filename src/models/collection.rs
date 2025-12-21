@@ -3,8 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::Tag;
 use super::datetime_format;
+use super::Tag;
 
 /// Named collection of assets
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -8,8 +8,7 @@ use serde::Deserialize;
 
 use crate::error::Result;
 use crate::models::{
-    AddTagRequest, Asset, CreateAssetRequest, PaginatedResponse, Tag,
-    UpdateAssetRequest,
+    AddTagRequest, Asset, CreateAssetRequest, PaginatedResponse, Tag, UpdateAssetRequest,
 };
 use crate::service::{AssetService, Services};
 

@@ -4,16 +4,15 @@
 //! Categories are free-form strings - no enum restrictions.
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
 use super::datetime_format;
 
 /// Regex for validating category names: alphanumeric, hyphens, underscores, forward slashes
-static CATEGORY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[a-zA-Z0-9_/-]+$").unwrap()
-});
+static CATEGORY_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9_/-]+$").unwrap());
 
 /// Validate a tag category string
 pub fn validate_category(category: &str) -> Result<(), String> {
@@ -41,11 +40,11 @@ pub fn validate_value(value: &str) -> Result<(), String> {
 }
 
 /// Tag attached to an asset
-/// 
+///
 /// Uses industry-standard key-value format:
 /// - `category`: Free-form string (e.g., "type", "status", "domain", "priority")
 /// - `value`: The tag value (e.g., "document", "draft", "backend", "high")
-/// 
+///
 /// Common categories (suggestions, not enforced):
 /// - `type` - Asset type (document, idea, requirement, bug, task)
 /// - `status` - Status (draft, review, approved, archived)
