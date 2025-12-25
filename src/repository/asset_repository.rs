@@ -66,7 +66,12 @@ impl AssetRepository {
     }
 
     /// Update an asset
-    pub async fn update(db: &Database, id: &str, request: UpdateAssetRequest, user_id: &str) -> Result<Asset> {
+    pub async fn update(
+        db: &Database,
+        id: &str,
+        request: UpdateAssetRequest,
+        user_id: &str,
+    ) -> Result<Asset> {
         let mut update_doc = doc! {
             "$set": {
                 "updated_at": Utc::now(),

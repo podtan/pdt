@@ -114,11 +114,8 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
         .and_then(|s| {
-            if s.starts_with("Bearer ") {
-                Some(s[7..].to_string())
-            } else {
-                None
-            }
+            s.strip_prefix("Bearer ")
+                .map(|token| token.to_string())
         })
 }
 
