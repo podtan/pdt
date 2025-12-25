@@ -22,7 +22,7 @@ mongodb = { version = "3", features = ["rustls-tls"] }
 bson = { version = "2", features = ["chrono-0_4", "uuid-1"] }
 
 # Authentication
-pep = { path = "../pep", features = ["oidc-resource-server", "config", "axum"] }
+pep = { version = "0.2.0", features = ["oidc-resource-server", "config", "axum"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
