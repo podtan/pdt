@@ -6,6 +6,7 @@ use axum::{
 };
 use serde::Deserialize;
 
+use crate::auth::AuthenticatedUser;
 use crate::error::Result;
 use crate::models::{CreateRelationRequest, Relation};
 use crate::service::{relation_service::GraphNode, RelationService, Services};
@@ -24,10 +25,10 @@ fn default_depth() -> u32 {
 /// Create a new relation
 pub async fn create_relation(
     State(services): State<Services>,
+    user: AuthenticatedUser,
     Json(request): Json<CreateRelationRequest>,
 ) -> Result<Json<Relation>> {
-    // TODO: Get user_id from authenticated context
-    let user_id = "system";
+    let user_id = &user.user_id;
 
     let relation = RelationService::create(services.db(), request, user_id).await?;
     Ok(Json(relation))
@@ -45,10 +46,10 @@ pub async fn get_relation(
 /// Delete a relation
 pub async fn delete_relation(
     State(services): State<Services>,
+    user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    // TODO: Get user_id from authenticated context
-    let user_id = "system";
+    let user_id = &user.user_id;
 
     RelationService::delete(services.db(), &id, user_id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))

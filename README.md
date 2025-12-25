@@ -34,7 +34,15 @@ DOCUMENTDB_TLS_ALLOW_INVALID=true
 # Server configuration (optional)
 PDT_HOST=0.0.0.0
 PDT_PORT=8080
+
+# Authentication (OIDC/OAuth2)
+AUTH_ENABLED=true
+AUTH_ISSUER_URL=https://auth.example.com
+AUTH_AUDIENCE=pdt-api
+AUTH_DEV_MODE=false  # Set to true for local development only
 ```
+
+See `env.example` for a complete template with all configuration options.
 
 ### Build and Run
 
@@ -48,7 +56,47 @@ cargo run --release
 
 ## API Endpoints
 
-### Assets
+### Authentication
+
+All write endpoints (`POST`, `PUT`, `DELETE`) and sensitive read endpoints require a valid Bearer token in the `Authorization` header:
+
+```bash
+curl -H "Authorization: Bearer <your_jwt_token>" https://api.pdt.example.com/api/assets
+```
+
+The token must be a valid JWT issued by your configured OIDC provider with:
+- Valid signature verified using the OIDC provider's JWKS
+- Non-expired (current time before `exp` claim)
+- Matching `aud` (audience) claim equal to `AUTH_AUDIENCE` setting
+- Valid `sub` claim (subject/user ID)
+
+#### Development Mode
+
+For local development, you can bypass authentication by setting `AUTH_DEV_MODE=true` in your `.env` file. This injects a default "dev-user" identity for unauthenticated requests. **Never enable in production.**
+
+#### Example Request with Real Token
+
+```bash
+curl -X POST https://api.pdt.example.com/api/assets \
+  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "My Asset",
+    "content": "Asset content",
+    "tags": [{"category": "type", "value": "document"}]
+  }'
+```
+
+#### Error Response (401 Unauthorized)
+
+If the token is missing, invalid, or expired:
+
+```json
+{
+  "error": "Invalid token",
+  "details": "Token has expired"
+}
+```
 
 - `POST /api/assets` - Create asset
 - `GET /api/assets` - List assets

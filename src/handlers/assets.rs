@@ -6,6 +6,7 @@ use axum::{
 };
 use serde::Deserialize;
 
+use crate::auth::AuthenticatedUser;
 use crate::error::Result;
 use crate::models::{
     AddTagRequest, Asset, CreateAssetRequest, PaginatedResponse, Tag, UpdateAssetRequest,
@@ -45,10 +46,10 @@ pub struct ListAssetsParams {
 /// Create a new asset
 pub async fn create_asset(
     State(services): State<Services>,
+    user: AuthenticatedUser,
     Json(request): Json<CreateAssetRequest>,
 ) -> Result<Json<Asset>> {
-    // TODO: Get user_id from authenticated context
-    let user_id = "system";
+    let user_id = &user.user_id;
 
     let asset = AssetService::create(services.db(), request, user_id).await?;
     Ok(Json(asset))
@@ -66,11 +67,11 @@ pub async fn get_asset(
 /// Update an asset
 pub async fn update_asset(
     State(services): State<Services>,
+    user: AuthenticatedUser,
     Path(id): Path<String>,
     Json(request): Json<UpdateAssetRequest>,
 ) -> Result<Json<Asset>> {
-    // TODO: Get user_id from authenticated context
-    let user_id = "system";
+    let user_id = &user.user_id;
 
     let asset = AssetService::update(services.db(), &id, request, user_id).await?;
     Ok(Json(asset))
@@ -79,10 +80,10 @@ pub async fn update_asset(
 /// Delete an asset
 pub async fn delete_asset(
     State(services): State<Services>,
+    user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    // TODO: Get user_id from authenticated context
-    let user_id = "system";
+    let user_id = &user.user_id;
 
     AssetService::delete(services.db(), &id, user_id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
@@ -113,11 +114,11 @@ pub async fn list_assets(
 /// Add a tag to an asset
 pub async fn add_tag(
     State(services): State<Services>,
+    user: AuthenticatedUser,
     Path(id): Path<String>,
     Json(request): Json<AddTagRequest>,
 ) -> Result<Json<Tag>> {
-    // TODO: Get user_id from authenticated context
-    let user_id = "system";
+    let user_id = &user.user_id;
 
     let tag = AssetService::add_tag(services.db(), &id, request, user_id).await?;
     Ok(Json(tag))
@@ -126,10 +127,10 @@ pub async fn add_tag(
 /// Remove a tag from an asset
 pub async fn remove_tag(
     State(services): State<Services>,
+    user: AuthenticatedUser,
     Path((id, tag_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
-    // TODO: Get user_id from authenticated context
-    let user_id = "system";
+    let user_id = &user.user_id;
 
     AssetService::remove_tag(services.db(), &id, &tag_id, user_id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))

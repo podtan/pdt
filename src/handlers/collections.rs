@@ -5,6 +5,7 @@ use axum::{
     Json,
 };
 
+use crate::auth::AuthenticatedUser;
 use crate::error::Result;
 use crate::models::{
     AddAssetRequest, Collection, CreateCollectionRequest, PaginatedResponse, PaginationParams,
@@ -15,10 +16,10 @@ use crate::service::{CollectionService, Services};
 /// Create a new collection
 pub async fn create_collection(
     State(services): State<Services>,
+    user: AuthenticatedUser,
     Json(request): Json<CreateCollectionRequest>,
 ) -> Result<Json<Collection>> {
-    // TODO: Get user_id from authenticated context
-    let user_id = "system";
+    let user_id = &user.user_id;
 
     let collection = CollectionService::create(services.db(), request, user_id).await?;
     Ok(Json(collection))
@@ -36,11 +37,11 @@ pub async fn get_collection(
 /// Update a collection
 pub async fn update_collection(
     State(services): State<Services>,
+    user: AuthenticatedUser,
     Path(id): Path<String>,
     Json(request): Json<UpdateCollectionRequest>,
 ) -> Result<Json<Collection>> {
-    // TODO: Get user_id from authenticated context
-    let user_id = "system";
+    let user_id = &user.user_id;
 
     let collection = CollectionService::update(services.db(), &id, request, user_id).await?;
     Ok(Json(collection))
@@ -49,10 +50,10 @@ pub async fn update_collection(
 /// Delete a collection
 pub async fn delete_collection(
     State(services): State<Services>,
+    user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    // TODO: Get user_id from authenticated context
-    let user_id = "system";
+    let user_id = &user.user_id;
 
     CollectionService::delete(services.db(), &id, user_id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
@@ -76,11 +77,11 @@ pub async fn list_collections(
 /// Add an asset to a collection
 pub async fn add_asset(
     State(services): State<Services>,
+    user: AuthenticatedUser,
     Path(id): Path<String>,
     Json(request): Json<AddAssetRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    // TODO: Get user_id from authenticated context
-    let user_id = "system";
+    let user_id = &user.user_id;
 
     CollectionService::add_asset(services.db(), &id, &request.asset_id, user_id).await?;
     Ok(Json(serde_json::json!({ "added": true })))
@@ -89,10 +90,10 @@ pub async fn add_asset(
 /// Remove an asset from a collection
 pub async fn remove_asset(
     State(services): State<Services>,
+    user: AuthenticatedUser,
     Path((id, asset_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
-    // TODO: Get user_id from authenticated context
-    let user_id = "system";
+    let user_id = &user.user_id;
 
     CollectionService::remove_asset(services.db(), &id, &asset_id, user_id).await?;
     Ok(Json(serde_json::json!({ "removed": true })))
