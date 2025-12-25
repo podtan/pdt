@@ -1,5 +1,6 @@
 //! Configuration module for PDT
 
+use crate::auth::config::AuthConfig;
 use anyhow::{Context, Result};
 use std::env;
 
@@ -42,6 +43,7 @@ impl DatabaseConfig {
 pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
+    pub auth: AuthConfig,
 }
 
 impl Config {
@@ -68,6 +70,19 @@ impl Config {
                     .parse()
                     .unwrap_or(false),
                 tls_allow_invalid: env::var("DOCUMENTDB_TLS_ALLOW_INVALID")
+                    .unwrap_or_else(|_| "false".to_string())
+                    .parse()
+                    .unwrap_or(false),
+            },
+            auth: AuthConfig {
+                enabled: env::var("AUTH_ENABLED")
+                    .unwrap_or_else(|_| "true".to_string())
+                    .parse()
+                    .unwrap_or(true),
+                issuer_url: env::var("AUTH_ISSUER_URL")
+                    .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+                expected_audience: env::var("AUTH_AUDIENCE").ok(),
+                dev_mode: env::var("AUTH_DEV_MODE")
                     .unwrap_or_else(|_| "false".to_string())
                     .parse()
                     .unwrap_or(false),

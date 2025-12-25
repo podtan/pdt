@@ -126,13 +126,15 @@ impl AssetRepository {
         Ok(())
     }
 
-    /// List assets with pagination
+    /// List assets with pagination and sorting
     /// Optionally filter by asset type tag value
     pub async fn list(
         db: &Database,
         limit: i64,
         cursor: Option<&str>,
         asset_type_tag: Option<&str>,
+        sort_by: &str,
+        order: &str,
     ) -> Result<(Vec<Asset>, Option<String>)> {
         let mut filter = doc! { "deleted_at": { "$exists": false } };
 
@@ -153,8 +155,19 @@ impl AssetRepository {
             filter.insert("_id", doc! { "$gt": c });
         }
 
+        // Build sort document
+        let sort_order = match order.to_lowercase().as_str() {
+            "asc" | "ascending" => 1,
+            _ => -1, // Default to descending
+        };
+
+        let sort_field = match sort_by {
+            "created_at" => "created_at",
+            _ => "updated_at", // Default to updated_at
+        };
+
         let options = mongodb::options::FindOptions::builder()
-            .sort(doc! { "_id": 1 })
+            .sort(doc! { sort_field: sort_order })
             .limit(limit + 1)
             .build();
 

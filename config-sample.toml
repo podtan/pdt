@@ -1,0 +1,27 @@
+# PDT Configuration Sample
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+url = "mongodb://localhost:27017"
+username = "admin"
+password = "password"
+database = "pdt"
+tls = false
+tls_allow_invalid = false
+
+[auth]
+# Enable/disable authentication enforcement
+enabled = true
+
+# OIDC Issuer URL (e.g., Kanidm, Keycloak)
+issuer_url = "http://localhost:8080"
+
+# Expected audience (client ID) in the JWT
+expected_audience = "pdt-api"
+
+# Development mode: injects mock claims if token is missing or auth is disabled
+# WARNING: Never enable in production
+dev_mode = true

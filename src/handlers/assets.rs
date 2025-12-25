@@ -16,6 +16,14 @@ fn default_limit() -> i64 {
     20
 }
 
+fn default_sort_by() -> String {
+    "updated_at".to_string()
+}
+
+fn default_order() -> String {
+    "desc".to_string()
+}
+
 /// Query parameters for listing assets
 /// Note: pagination fields inlined to work around serde_urlencoded#33 (flatten breaks numeric deserialize)
 #[derive(Debug, Deserialize)]
@@ -26,6 +34,12 @@ pub struct ListAssetsParams {
     pub cursor: Option<String>,
     /// Filter by asset type tag value (e.g., "document", "concept", "idea")
     pub asset_type: Option<String>,
+    /// Sort field: "created_at" or "updated_at" (default: "updated_at")
+    #[serde(default = "default_sort_by")]
+    pub sort_by: String,
+    /// Sort order: "asc" or "desc" (default: "desc")
+    #[serde(default = "default_order")]
+    pub order: String,
 }
 
 /// Create a new asset
@@ -84,6 +98,8 @@ pub async fn list_assets(
         params.limit,
         params.cursor.as_deref(),
         params.asset_type.as_deref(),
+        &params.sort_by,
+        &params.order,
     )
     .await?;
 

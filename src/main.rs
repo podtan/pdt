@@ -11,7 +11,8 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use pdt::{config::Config, db::Database, handlers, service::Services};
+use pdt::{auth::middleware::AuthLayer, config::Config, db::Database, handlers, service::Services};
+use pep::oidc_resource_server::ResourceServerClient;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -41,6 +42,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize services
     let services = Services::new(db);
+
+    // Initialize auth
+    let auth_client = ResourceServerClient::new();
+    let auth_layer = AuthLayer::new(config.auth.clone(), auth_client);
+    tracing::info!("Auth layer initialized (enabled: {})", config.auth.enabled);
 
     // Build router
     let app = Router::new()
@@ -111,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
         )
         // Middleware
         .layer(TraceLayer::new_for_http())
+        .layer(auth_layer)
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

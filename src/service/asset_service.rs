@@ -121,8 +121,10 @@ impl AssetService {
         limit: i64,
         cursor: Option<&str>,
         asset_type_tag: Option<&str>,
+        sort_by: &str,
+        order: &str,
     ) -> Result<(Vec<Asset>, Option<String>)> {
-        AssetRepository::list(db, limit, cursor, asset_type_tag).await
+        AssetRepository::list(db, limit, cursor, asset_type_tag, sort_by, order).await
     }
 
     /// Add a tag to an asset
