@@ -23,6 +23,7 @@ pub struct Collection {
     #[serde(with = "datetime_format")]
     pub updated_at: DateTime<Utc>,
     pub created_by: String,
+    pub updated_by: String,
 }
 
 /// Request to create a new collection

@@ -62,7 +62,7 @@ impl CollectionService {
         let old_collection = CollectionRepository::get_by_id(db, id).await?;
 
         // Update collection
-        let collection = CollectionRepository::update(db, id, request.clone()).await?;
+        let collection = CollectionRepository::update(db, id, request.clone(), user_id).await?;
 
         // Create audit entry
         AuditRepository::create(

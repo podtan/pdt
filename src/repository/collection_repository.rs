@@ -43,6 +43,7 @@ impl CollectionRepository {
             created_at: now,
             updated_at: now,
             created_by: user_id.to_string(),
+            updated_by: user_id.to_string(),
         };
 
         db.collections().insert_one(&collection).await?;
@@ -65,10 +66,12 @@ impl CollectionRepository {
         db: &Database,
         id: &str,
         request: UpdateCollectionRequest,
+        user_id: &str,
     ) -> Result<Collection> {
         let mut update_doc = doc! {
             "$set": {
-                "updated_at": Utc::now()
+                "updated_at": Utc::now(),
+                "updated_by": user_id
             }
         };
 

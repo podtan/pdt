@@ -69,7 +69,7 @@ impl AssetService {
         let old_asset = AssetRepository::get_by_id(db, id).await?;
 
         // Update asset
-        let asset = AssetRepository::update(db, id, request.clone()).await?;
+        let asset = AssetRepository::update(db, id, request.clone(), user_id).await?;
 
         // Create audit entry
         AuditRepository::create(

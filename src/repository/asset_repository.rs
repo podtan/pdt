@@ -43,6 +43,7 @@ impl AssetRepository {
             created_at: now,
             updated_at: now,
             created_by: user_id.to_string(),
+            updated_by: user_id.to_string(),
             deleted_at: None,
         };
 
@@ -65,10 +66,11 @@ impl AssetRepository {
     }
 
     /// Update an asset
-    pub async fn update(db: &Database, id: &str, request: UpdateAssetRequest) -> Result<Asset> {
+    pub async fn update(db: &Database, id: &str, request: UpdateAssetRequest, user_id: &str) -> Result<Asset> {
         let mut update_doc = doc! {
             "$set": {
-                "updated_at": Utc::now()
+                "updated_at": Utc::now(),
+                "updated_by": user_id
             }
         };
 
