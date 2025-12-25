@@ -33,9 +33,11 @@ pub async fn search(
     Query(params): Query<SearchParams>,
 ) -> Result<Json<PaginatedResponse<Asset>>> {
     // Parse tag filters (format: "category:value")
+    // Supports both exploded (tags=a:b&tags=c:d) and comma-separated (tags=a:b,c:d) formats
     let tag_filters: Vec<(String, String)> = params
         .tags
         .iter()
+        .flat_map(|t| t.split(','))
         .filter_map(|t| {
             let parts: Vec<&str> = t.splitn(2, ':').collect();
             if parts.len() == 2 {

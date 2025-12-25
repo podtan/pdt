@@ -233,7 +233,25 @@ impl AssetRepository {
 
         if let Some(q) = query {
             if !q.is_empty() {
-                filter.insert("$text", doc! { "$search": q });
+                // Improve search precision:
+                // 1. If it's multiple words and not quoted, try to make it an AND search
+                //    by prefixing each word with '+'.
+                // 2. If it's already quoted, leave it as a phrase search.
+                let search_query = if q.contains(' ') && !q.starts_with('"') {
+                    q.split_whitespace()
+                        .map(|w| {
+                            if w.starts_with('+') || w.starts_with('-') {
+                                w.to_string()
+                            } else {
+                                format!("+{}", w)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    q.to_string()
+                };
+                filter.insert("$text", doc! { "$search": search_query });
             }
         }
 
@@ -256,10 +274,19 @@ impl AssetRepository {
             filter.insert("_id", doc! { "$gt": c });
         }
 
-        let options = mongodb::options::FindOptions::builder()
-            .sort(doc! { "_id": 1 })
-            .limit(limit + 1)
-            .build();
+        let options = if query.is_some() {
+            // Sort by relevance (text score) when a search query is provided
+            mongodb::options::FindOptions::builder()
+                .sort(doc! { "score": { "$meta": "textScore" } })
+                .limit(limit + 1)
+                .build()
+        } else {
+            // Otherwise sort by ID for stable pagination
+            mongodb::options::FindOptions::builder()
+                .sort(doc! { "_id": 1 })
+                .limit(limit + 1)
+                .build()
+        };
 
         let mut cursor = db.assets().find(filter).with_options(options).await?;
         let mut assets = Vec::new();
