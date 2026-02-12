@@ -16,35 +16,47 @@ pub use tag::{validate_category, validate_value, AddTagRequest, Tag};
 
 use serde::{Deserialize, Serialize};
 
-/// Custom datetime serialization for API responses (ISO 8601 format)
-/// MongoDB stores dates in BSON format, but we want ISO 8601 strings in JSON API responses
+/// Custom datetime serialization that writes:
+/// - **JSON** (human-readable): RFC3339 strings for API responses
+/// - **BSON** (non-human-readable): native BSON datetimes for MongoDB storage
+///
+/// Deserialization handles both native BSON datetimes, RFC3339 strings (legacy data),
+/// and extended JSON `{"$date": ...}` format for full backward compatibility.
 pub mod datetime_format {
     use chrono::{DateTime, Utc};
-    use serde::{self, Deserialize, Deserializer, Serializer};
+    use serde::{self, Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S>(date: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.serialize_str(&date.to_rfc3339())
+        if serializer.is_human_readable() {
+            // JSON API responses: RFC3339 string
+            serializer.serialize_str(&date.to_rfc3339())
+        } else {
+            // BSON/MongoDB storage: native BSON datetime
+            let bson_dt = bson::DateTime::from_chrono(*date);
+            bson_dt.serialize(serializer)
+        }
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        // Support both ISO 8601 strings and BSON datetime format
         use serde::de::Error;
 
+        // Support native BSON datetime, RFC3339 strings (legacy), and extended JSON
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum DateTimeFormat {
+            BsonNative(bson::DateTime),
             Rfc3339(String),
-            Bson(BsonDateTime),
+            BsonExtJson(BsonDateTimeExtJson),
         }
 
         #[derive(Deserialize)]
-        struct BsonDateTime {
+        struct BsonDateTimeExtJson {
             #[serde(rename = "$date")]
             date: BsonDateInner,
         }
@@ -60,11 +72,12 @@ pub mod datetime_format {
         }
 
         match DateTimeFormat::deserialize(deserializer)? {
+            DateTimeFormat::BsonNative(bson_dt) => Ok(bson_dt.to_chrono()),
             DateTimeFormat::Rfc3339(s) => DateTime::parse_from_rfc3339(&s)
                 .map(|dt| dt.with_timezone(&Utc))
                 .map_err(|e| D::Error::custom(format!("Invalid datetime format: {}", e))),
-            DateTimeFormat::Bson(bson) => {
-                let millis = match bson.date {
+            DateTimeFormat::BsonExtJson(ext) => {
+                let millis = match ext.date {
                     BsonDateInner::NumberLong { number_long } => number_long
                         .parse::<i64>()
                         .map_err(|e| D::Error::custom(format!("Invalid numberLong: {}", e)))?,
