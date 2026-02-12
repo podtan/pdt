@@ -135,6 +135,10 @@ impl AssetRepository {
 
     /// List assets with pagination and sorting
     /// Optionally filter by asset type tag value
+    ///
+    /// Cursor format: when sorting by a date field, the cursor is
+    /// `<ISO8601_datetime>|<_id>` to correctly paginate across
+    /// non-unique sort fields. For `_id` sorting, the cursor is just the `_id`.
     pub async fn list(
         db: &Database,
         limit: i64,
@@ -158,10 +162,6 @@ impl AssetRepository {
             );
         }
 
-        if let Some(c) = cursor {
-            filter.insert("_id", doc! { "$gt": c });
-        }
-
         // Build sort document
         let sort_order = match order.to_lowercase().as_str() {
             "asc" | "ascending" => 1,
@@ -173,8 +173,38 @@ impl AssetRepository {
             _ => "updated_at", // Default to updated_at
         };
 
+        // Parse cursor and apply proper seek-based pagination.
+        // The cursor encodes `<sort_field_value>|<_id>` so we can
+        // seek past the last seen item even when the sort field is not unique.
+        if let Some(c) = cursor {
+            if let Some((date_str, id)) = c.split_once('|') {
+                // Compound cursor: seek past (sort_field, _id)
+                use chrono::DateTime;
+                if let Ok(dt) = date_str.parse::<DateTime<Utc>>() {
+                    let bson_dt = mongodb::bson::DateTime::from_millis(dt.timestamp_millis());
+                    let comparator = if sort_order == -1 { "$lt" } else { "$gt" };
+                    // Items that have a strictly "further" sort value, OR same sort value but further _id
+                    filter.insert(
+                        "$or",
+                        bson::bson!([
+                            { sort_field: { comparator: bson_dt } },
+                            { sort_field: bson_dt, "_id": { comparator: id } }
+                        ]),
+                    );
+                } else {
+                    // Fallback: treat entire cursor as _id (legacy format)
+                    let comparator = if sort_order == -1 { "$lt" } else { "$gt" };
+                    filter.insert("_id", doc! { comparator: c });
+                }
+            } else {
+                // Simple _id cursor (legacy format)
+                let comparator = if sort_order == -1 { "$lt" } else { "$gt" };
+                filter.insert("_id", doc! { comparator: c });
+            }
+        }
+
         let options = mongodb::options::FindOptions::builder()
-            .sort(doc! { sort_field: sort_order })
+            .sort(doc! { sort_field: sort_order, "_id": sort_order })
             .limit(limit + 1)
             .build();
 
@@ -187,7 +217,14 @@ impl AssetRepository {
 
         let next_cursor = if assets.len() > limit as usize {
             assets.pop();
-            assets.last().map(|a| a.id.clone())
+            // Encode cursor as `<sort_field_value>|<_id>`
+            assets.last().map(|a| {
+                let date_val = match sort_field {
+                    "created_at" => a.created_at.to_rfc3339(),
+                    _ => a.updated_at.to_rfc3339(),
+                };
+                format!("{}|{}", date_val, a.id)
+            })
         } else {
             None
         };
