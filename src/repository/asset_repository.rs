@@ -328,7 +328,26 @@ impl AssetRepository {
         }
 
         if let Some(c) = cursor {
-            filter.insert("_id", doc! { "$gt": c });
+            if let Some((date_str, id)) = c.split_once('|') {
+                // Compound cursor: seek past (updated_at, _id)
+                use chrono::DateTime;
+                if let Ok(dt) = date_str.parse::<DateTime<Utc>>() {
+                    let bson_dt = mongodb::bson::DateTime::from_millis(dt.timestamp_millis());
+                    filter.insert(
+                        "$or",
+                        bson::bson!([
+                            { "updated_at": { "$lt": bson_dt } },
+                            { "updated_at": bson_dt, "_id": { "$lt": id } }
+                        ]),
+                    );
+                } else {
+                    // Fallback: treat entire cursor as _id
+                    filter.insert("_id", doc! { "$lt": c });
+                }
+            } else {
+                // Simple _id cursor (legacy format)
+                filter.insert("_id", doc! { "$lt": c });
+            }
         }
 
         let options = if query.is_some() {
@@ -338,9 +357,9 @@ impl AssetRepository {
                 .limit(limit + 1)
                 .build()
         } else {
-            // Otherwise sort by ID for stable pagination
+            // Otherwise sort by updated_at descending for most recent first
             mongodb::options::FindOptions::builder()
-                .sort(doc! { "_id": 1 })
+                .sort(doc! { "updated_at": -1 })
                 .limit(limit + 1)
                 .build()
         };
@@ -354,7 +373,8 @@ impl AssetRepository {
 
         let next_cursor = if assets.len() > limit as usize {
             assets.pop();
-            assets.last().map(|a| a.id.clone())
+            // Encode cursor as `<updated_at>|<_id>` for consistent pagination
+            assets.last().map(|a| format!("{}|{}", a.updated_at.to_rfc3339(), a.id))
         } else {
             None
         };
