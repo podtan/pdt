@@ -520,8 +520,19 @@ paths:
 
   /api/search:
     get:
-      summary: Search assets
-      description: Full-text search assets with tag-based filtering
+      summary: Search assets (compact by default)
+      description: |
+        Full-text search assets with tag-based filtering.
+
+        **Default behavior (full_content=false)**: Returns compact SearchResult objects
+        containing only id, title, snippet (first ~200 chars, markdown-stripped),
+        tags (category + value only), and updated_at. This is efficient for listing
+        and discovery — use it to find asset IDs, then call GET /api/assets/{id}
+        to retrieve full content when needed.
+
+        **With full_content=true**: Returns full Asset objects with complete content,
+        metadata, and full tag details (id, added_by, added_at). Use sparingly —
+        this can flood context windows and waste bandwidth.
       operationId: searchAssets
       parameters:
         - name: q
