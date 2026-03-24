@@ -109,8 +109,17 @@ pub fn generate_snippet(content: &str, max_length: usize) -> Option<String> {
         return Some(text);
     }
 
-    // Truncate at word boundary
-    let truncated = &text[..max_length];
+    // Find a safe char boundary at or before max_length
+    let mut end = max_length;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == 0 {
+        return Some(text);
+    }
+
+    // Truncate at word boundary within the safe range
+    let truncated = &text[..end];
     Some(format!(
         "{}...",
         truncated.rsplit_once(' ').map(|(w, _)| w).unwrap_or(truncated)
