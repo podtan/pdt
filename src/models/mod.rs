@@ -6,7 +6,7 @@ mod collection;
 mod relation;
 mod tag;
 
-pub use asset::{Asset, CreateAssetRequest, UpdateAssetRequest};
+pub use asset::{generate_snippet, Asset, CreateAssetRequest, SearchResult, TagSummary, UpdateAssetRequest};
 pub use audit::{AuditAction, AuditEntry};
 pub use collection::{
     AddAssetRequest, Collection, CreateCollectionRequest, UpdateCollectionRequest,

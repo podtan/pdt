@@ -7,7 +7,9 @@ use axum::{
 use serde::Deserialize;
 
 use crate::error::Result;
-use crate::models::{Asset, PaginatedResponse};
+use crate::models::{
+    generate_snippet, PaginatedResponse, SearchResult, TagSummary,
+};
 use crate::service::{SearchService, Services};
 
 fn default_limit() -> i64 {
@@ -29,22 +31,20 @@ pub struct SearchParams {
     /// Multiple tag filters (repeated param: tag=type:doc&tag=status:draft)
     #[serde(default)]
     pub tags: Vec<String>,
+    /// When true, return full Asset objects with complete content.
+    /// Default: false (returns compact SearchResult with snippet)
+    #[serde(default)]
+    pub full_content: bool,
 }
 
-/// Search assets
-pub async fn search(
-    State(services): State<Services>,
-    Query(params): Query<SearchParams>,
-) -> Result<Json<PaginatedResponse<Asset>>> {
-    // Combine single tag with tags array
+/// Internal helper to build the common tag_filters from params
+fn parse_tag_filters(params: &SearchParams) -> Vec<(String, String)> {
     let mut all_tags = params.tags.clone();
     if let Some(tag) = &params.tag {
         all_tags.push(tag.clone());
     }
-    
-    // Parse tag filters (format: "category:value")
-    // Supports both exploded (tags=a:b&tags=c:d) and comma-separated (tags=a:b,c:d) formats
-    let tag_filters: Vec<(String, String)> = all_tags
+
+    all_tags
         .iter()
         .flat_map(|t| t.split(','))
         .filter_map(|t| {
@@ -55,7 +55,15 @@ pub async fn search(
                 None
             }
         })
-        .collect();
+        .collect()
+}
+
+/// Search assets — returns compact SearchResult by default, full Asset when full_content=true
+pub async fn search(
+    State(services): State<Services>,
+    Query(params): Query<SearchParams>,
+) -> Result<Json<serde_json::Value>> {
+    let tag_filters = parse_tag_filters(&params);
 
     let (assets, next_cursor) = SearchService::search(
         services.db(),
@@ -66,9 +74,37 @@ pub async fn search(
     )
     .await?;
 
-    Ok(Json(PaginatedResponse {
-        data: assets,
-        next_cursor,
-        total: None,
-    }))
+    if params.full_content {
+        // Legacy behavior: return full assets
+        Ok(Json(serde_json::to_value(PaginatedResponse {
+            data: assets,
+            next_cursor,
+            total: None,
+        })?))
+    } else {
+        // New default: return compact search results
+        let results: Vec<SearchResult> = assets
+            .into_iter()
+            .map(|a| SearchResult {
+                id: a.id,
+                title: a.title,
+                snippet: generate_snippet(a.content.as_deref().unwrap_or(""), 200),
+                tags: a
+                    .tags
+                    .into_iter()
+                    .map(|t| TagSummary {
+                        category: t.category,
+                        value: t.value,
+                    })
+                    .collect(),
+                updated_at: a.updated_at,
+            })
+            .collect();
+
+        Ok(Json(serde_json::to_value(PaginatedResponse {
+            data: results,
+            next_cursor,
+            total: None,
+        })?))
+    }
 }

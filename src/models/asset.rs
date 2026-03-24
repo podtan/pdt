@@ -56,3 +56,63 @@ pub struct UpdateAssetRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
+
+/// Compact search result — returned by /api/search by default
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResult {
+    #[serde(rename = "_id")]
+    pub id: String,
+    pub title: String,
+    /// Auto-generated snippet (first 200 chars, markdown-stripped)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    /// Compact tags without noise fields (id, added_by, added_at)
+    pub tags: Vec<TagSummary>,
+    #[serde(with = "datetime_format")]
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Tag without internal metadata — suitable for list/search views
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagSummary {
+    pub category: String,
+    pub value: String,
+}
+
+/// Generate a compact snippet from markdown content.
+///
+/// Strips markdown syntax, collapses whitespace, and truncates at word boundary.
+pub fn generate_snippet(content: &str, max_length: usize) -> Option<String> {
+    if content.is_empty() {
+        return None;
+    }
+
+    // Strip markdown syntax
+    let text: String = content
+        .lines()
+        .map(|l| l.trim_start_matches('#').trim_start())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace("**", "")
+        .replace("*", "")
+        .replace("`", "")
+        .replace("```", "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if text.is_empty() {
+        return None;
+    }
+
+    if text.len() <= max_length {
+        return Some(text);
+    }
+
+    // Truncate at word boundary
+    let truncated = &text[..max_length];
+    Some(format!(
+        "{}...",
+        truncated.rsplit_once(' ').map(|(w, _)| w).unwrap_or(truncated)
+    ))
+}

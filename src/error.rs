@@ -39,6 +39,9 @@ pub enum ApiError {
     #[error("BSON serialization error: {0}")]
     BsonSer(#[from] bson::ser::Error),
 
+    #[error("JSON serialization error: {0}")]
+    JsonSer(#[from] serde_json::Error),
+
     #[error("Validation error: {0}")]
     Validation(String),
 }
@@ -96,6 +99,14 @@ impl IntoResponse for ApiError {
                 )
             }
             ApiError::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
+            ApiError::JsonSer(e) => {
+                tracing::error!("JSON serialization error: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "SERIALIZATION_ERROR",
+                    "A serialization error occurred".to_string(),
+                )
+            }
         };
 
         let body = ErrorResponse {

@@ -551,13 +551,26 @@ paths:
           schema:
             type: string
           description: Cursor for pagination
+        - name: full_content
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: |
+            When true, return full Asset objects with complete content.
+            Default: false (returns compact SearchResult with snippet).
       responses:
         '200':
           description: Search results
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaginatedAssetResponse'
+                description: |
+                  By default returns compact SearchResult objects (id, title, snippet, tags, updated_at).
+                  When full_content=true, returns full Asset objects.
+                oneOf:
+                  - $ref: '#/components/schemas/PaginatedSearchResultResponse'
+                  - $ref: '#/components/schemas/PaginatedAssetResponse'
 
   /api/audit:
     get:
@@ -963,6 +976,66 @@ components:
           type: object
           additionalProperties: true
           description: Additional action details
+
+    SearchResult:
+      type: object
+      required:
+        - id
+        - title
+        - updated_at
+      properties:
+        id:
+          type: string
+          description: Unique asset identifier
+          example: "507f1f77bcf86cd799439011"
+        title:
+          type: string
+          description: Asset title
+          example: "User Authentication Design Document"
+        snippet:
+          type: string
+          description: Auto-generated snippet (first 200 chars, markdown-stripped)
+          example: "User Authentication This document describes the authentication flow..."
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/TagSummary'
+          description: Compact tags (category + value only)
+        updated_at:
+          type: string
+          format: date-time
+          description: Last update timestamp
+
+    TagSummary:
+      type: object
+      required:
+        - category
+        - value
+      properties:
+        category:
+          type: string
+          description: Tag category
+          example: "type"
+        value:
+          type: string
+          description: Tag value
+          example: "document"
+
+    PaginatedSearchResultResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+        next_cursor:
+          type: string
+          description: Cursor for next page (null if no more pages)
+        total:
+          type: integer
+          description: Total number of results (optional)
 
     PaginatedAssetResponse:
       type: object
