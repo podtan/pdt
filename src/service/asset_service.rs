@@ -5,7 +5,8 @@ use serde_json::json;
 use crate::db::Database;
 use crate::error::{ApiError, Result};
 use crate::models::{
-    AddTagRequest, Asset, AuditAction, CreateAssetRequest, Tag, UpdateAssetRequest,
+    AddTagRequest, Asset, AuditAction, CreateAssetRequest, Tag,
+    UpdateAssetRequest, UpdateAuthContextRequest,
 };
 use crate::repository::{
     AssetRepository, AuditRepository, CollectionRepository, RelationRepository,
@@ -15,7 +16,7 @@ use crate::repository::{
 pub struct AssetService;
 
 impl AssetService {
-    /// Create a new asset with validation
+    /// Create a new asset with validation and default auth_context
     pub async fn create(
         db: &Database,
         request: CreateAssetRequest,
@@ -26,7 +27,7 @@ impl AssetService {
             return Err(ApiError::Validation("Title cannot be empty".to_string()));
         }
 
-        // Create asset
+        // Create asset (repository auto-populates default auth_context)
         let asset = AssetRepository::create(db, request.clone(), user_id).await?;
 
         // Create audit entry
@@ -178,5 +179,46 @@ impl AssetService {
         .await?;
 
         Ok(())
+    }
+
+    /// Update the authorization context of an asset
+    pub async fn update_auth_context(
+        db: &Database,
+        id: &str,
+        request: UpdateAuthContextRequest,
+        user_id: &str,
+    ) -> Result<Asset> {
+        // Get current asset
+        let asset = AssetRepository::get_by_id(db, id).await?;
+
+        // Merge request fields into existing auth_context (or create default)
+        let mut ctx = asset.auth_context.unwrap_or_default();
+        if let Some(visibility) = request.visibility {
+            ctx.visibility = visibility;
+        }
+        if let Some(owner_groups) = request.owner_groups {
+            ctx.owner_groups = owner_groups;
+        }
+        if let Some(confidentiality) = request.confidentiality {
+            ctx.confidentiality = confidentiality;
+        }
+
+        let updated = AssetRepository::update_auth_context(db, id, &ctx).await?;
+
+        // Audit
+        AuditRepository::create(
+            db,
+            "asset",
+            id,
+            AuditAction::Update,
+            json!({
+                "action": "update_auth_context",
+                "auth_context": &ctx,
+            }),
+            user_id,
+        )
+        .await?;
+
+        Ok(updated)
     }
 }

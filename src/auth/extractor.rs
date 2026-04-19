@@ -1,5 +1,4 @@
 use axum::{
-    async_trait,
     extract::FromRequestParts,
     http::{request::Parts, StatusCode},
 };
@@ -11,8 +10,7 @@ pub struct AuthenticatedUser {
     pub email: Option<String>,
 }
 
-#[async_trait]
-impl<S> FromRequestParts<S> for AuthenticatedUser
+impl<S: Send + Sync> FromRequestParts<S> for AuthenticatedUser
 where
     S: Send + Sync,
 {

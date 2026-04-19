@@ -1,0 +1,27 @@
+// PDT Cedar Schema
+//
+// Defines entity types and actions for Cedar authorization.
+// Entity attributes are populated from multiple sources:
+//   - AuthContext fields (visibility, confidentiality, owner_groups)
+//   - Tag-derived fields (status, asset_type) read at eval time
+//   - Asset direct fields (created_by)
+
+entity User = {
+    email?: String,
+    role?: String,
+    groups?: Set<String>,
+};
+
+entity Asset = {
+    created_by?: String,
+    visibility?: String,
+    confidentiality?: String,
+    owner_groups?: Set<String>,
+    status?: String,
+    asset_type?: String,
+};
+
+action View, Create, Edit, Delete, Tag, Relate appliesTo {
+    principal: [User],
+    resource: [Asset],
+};

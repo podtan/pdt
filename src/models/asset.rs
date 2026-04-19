@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::auth_context::AuthContext;
 use super::datetime_format;
 use super::Tag;
 
@@ -31,6 +32,10 @@ pub struct Asset {
     pub updated_by: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Cedar authorization context — when present, Cedar policies are enforced.
+    /// When absent (grandfathered assets), access is open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_context: Option<AuthContext>,
 }
 
 /// Request to create a new asset
@@ -55,6 +60,17 @@ pub struct UpdateAssetRequest {
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
+}
+
+/// Request to update the authorization context of an asset
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateAuthContextRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_groups: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidentiality: Option<String>,
 }
 
 /// Compact search result — returned by /api/search by default

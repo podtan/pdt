@@ -8,7 +8,7 @@ authors = ["Podtan Team"]
 
 [dependencies]
 # Web framework
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace", "request-id"] }
@@ -21,8 +21,11 @@ serde_json = "1"
 mongodb = { version = "3", features = ["rustls-tls"] }
 bson = { version = "2", features = ["chrono-0_4", "uuid-1"] }
 
-# Authentication
-pep = { version = "0.2.1", features = ["oidc-resource-server", "config", "axum"] }
+# Authentication & Authorization
+cedar-policy = "4"
+
+# PEP library (local path — cedar feature not yet published to crates.io)
+pep = { path = "../pep", features = ["cedar", "oidc-resource-server", "config", "axum"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }

@@ -12,6 +12,7 @@ use tower_http::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use pdt::{auth::middleware::AuthLayer, config::Config, db::Database, handlers, service::Services};
+use std::sync::Arc;
 use pep::oidc_resource_server::ResourceServerClient;
 
 #[tokio::main]
@@ -42,6 +43,23 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize services
     let services = Services::new(db);
+
+    // Initialize Cedar authorization (optional — gracefully disabled when CEDAR_ENABLED=false)
+    let authorizer = if config.cedar.enabled {
+        match pep::cedar::CedarAuthorizer::new(config.cedar.clone().into()) {
+            Ok(authorizer) => {
+                tracing::info!("Cedar authorizer initialized (policy_path: {:?})", config.cedar.policy_path);
+                Some(authorizer)
+            }
+            Err(e) => {
+                tracing::error!("Failed to initialize Cedar authorizer: {}. Running without Cedar.", e);
+                None
+            }
+        }
+    } else {
+        tracing::info!("Cedar authorization disabled");
+        None
+    };
 
     // Initialize auth
     let auth_client = ResourceServerClient::new();
@@ -78,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/assets/:id/graph",
             get(handlers::relations::traverse_graph),
         )
-        // Collection routes
+        // Collection routes (no Cedar — use Services directly)
         .route(
             "/api/collections",
             post(handlers::collections::create_collection),
@@ -107,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/collections/:id/assets/:asset_id",
             delete(handlers::collections::remove_asset),
         )
-        // Search routes
+        // Search routes (with Cedar filtering)
         .route("/api/search", get(handlers::search::search))
         // Audit routes
         .route("/api/audit", get(handlers::audit::list_audit_entries))
@@ -124,7 +142,10 @@ async fn main() -> anyhow::Result<()> {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        .with_state(services);
+        .with_state((
+            services,
+            authorizer.map(Arc::new),
+        ));
 
     // Start server
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));

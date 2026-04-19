@@ -38,17 +38,68 @@ impl DatabaseConfig {
     }
 }
 
+/// Cedar authorization configuration
+#[derive(Debug, Clone)]
+pub struct CedarConfig {
+    pub enabled: bool,
+    pub policy_path: String,
+    pub schema_path: String,
+    pub validate_on_load: bool,
+    pub default_decision: String,
+}
+
+impl Default for CedarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: env::var("CEDAR_ENABLED")
+                .unwrap_or_else(|_| "false".to_string())
+                .parse()
+                .unwrap_or(false),
+            policy_path: env::var("CEDAR_POLICY_PATH")
+                .unwrap_or_else(|_| "./policies".to_string()),
+            schema_path: env::var("CEDAR_SCHEMA_PATH")
+                .unwrap_or_else(|_| "./policies/schema.cedarschema".to_string()),
+            validate_on_load: env::var("CEDAR_VALIDATE_ON_LOAD")
+                .unwrap_or_else(|_| "true".to_string())
+                .parse()
+                .unwrap_or(true),
+            default_decision: env::var("CEDAR_DEFAULT_DECISION")
+                .unwrap_or_else(|_| "deny".to_string()),
+        }
+    }
+}
+
+/// Convert PDT's CedarConfig to PEP's CedarConfig
+impl From<CedarConfig> for pep::cedar::CedarConfig {
+    fn from(config: CedarConfig) -> Self {
+        use std::path::PathBuf;
+        Self {
+            policy_path: PathBuf::from(&config.policy_path),
+            schema_path: Some(PathBuf::from(&config.schema_path)),
+            entities_path: None,
+            default_decision: match config.default_decision.as_str() {
+                "allow" => pep::cedar::config::DefaultDecision::Allow,
+                _ => pep::cedar::config::DefaultDecision::Deny,
+            },
+            validate_on_load: config.validate_on_load,
+        }
+    }
+}
+
 /// Main application configuration
 #[derive(Debug, Clone)]
 pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub auth: AuthConfig,
+    pub cedar: CedarConfig,
 }
 
 impl Config {
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self> {
+        let cedar = CedarConfig::default();
+
         Ok(Config {
             server: ServerConfig {
                 host: env::var("PDT_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
@@ -87,6 +138,7 @@ impl Config {
                     .parse()
                     .unwrap_or(false),
             },
+            cedar,
         })
     }
 }

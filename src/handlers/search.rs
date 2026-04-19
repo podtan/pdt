@@ -6,11 +6,13 @@ use axum::{
 };
 use serde::Deserialize;
 
+use crate::auth::AuthenticatedUser;
+use crate::cedar::enforcement::AppState;
 use crate::error::Result;
 use crate::models::{
     generate_snippet, PaginatedResponse, SearchResult, TagSummary,
 };
-use crate::service::{SearchService, Services};
+use crate::service::SearchService;
 
 fn default_limit() -> i64 {
     20
@@ -59,14 +61,17 @@ fn parse_tag_filters(params: &SearchParams) -> Vec<(String, String)> {
 }
 
 /// Search assets — returns compact SearchResult by default, full Asset when full_content=true
+/// Cedar filtering: assets the user cannot View are excluded from results.
 pub async fn search(
-    State(services): State<Services>,
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<serde_json::Value>> {
+    let claims = crate::cedar::enforcement::extract_claims_for_cedar(&user);
     let tag_filters = parse_tag_filters(&params);
 
     let (assets, next_cursor) = SearchService::search(
-        services.db(),
+        state.services().db(),
         params.q.as_deref(),
         tag_filters,
         params.limit,
@@ -74,16 +79,28 @@ pub async fn search(
     )
     .await?;
 
+    // Filter assets by Cedar View permission
+    let visible_assets = if let Some(authorizer) = state.authorizer() {
+        crate::cedar::enforcement::filter_by_permission(
+            authorizer,
+            &claims,
+            "View",
+            assets,
+        )
+    } else {
+        assets
+    };
+
     if params.full_content {
         // Legacy behavior: return full assets
         Ok(Json(serde_json::to_value(PaginatedResponse {
-            data: assets,
+            data: visible_assets,
             next_cursor,
             total: None,
         })?))
     } else {
         // New default: return compact search results
-        let results: Vec<SearchResult> = assets
+        let results: Vec<SearchResult> = visible_assets
             .into_iter()
             .map(|a| SearchResult {
                 id: a.id,

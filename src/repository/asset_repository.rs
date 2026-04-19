@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::db::Database;
 use crate::error::{ApiError, Result};
-use crate::models::{AddTagRequest, Asset, CreateAssetRequest, Tag, UpdateAssetRequest};
+use crate::models::{AddTagRequest, Asset, AuthContext, CreateAssetRequest, Tag, UpdateAssetRequest};
 
 /// Repository for asset operations
 pub struct AssetRepository;
@@ -45,6 +45,7 @@ impl AssetRepository {
             created_by: user_id.to_string(),
             updated_by: user_id.to_string(),
             deleted_at: None,
+            auth_context: Some(AuthContext::default()),
         };
 
         db.assets().insert_one(&asset).await?;
@@ -387,5 +388,31 @@ impl AssetRepository {
         let filter = doc! { "_id": id };
         let count = db.assets().count_documents(filter).await?;
         Ok(count > 0)
+    }
+
+    /// Update the auth_context of an asset
+    pub async fn update_auth_context(
+        db: &Database,
+        id: &str,
+        auth_context: &AuthContext,
+    ) -> Result<Asset> {
+        let filter = doc! {
+            "_id": id,
+            "deleted_at": { "$exists": false }
+        };
+
+        let update = doc! {
+            "$set": {
+                "auth_context": bson::to_bson(auth_context)?,
+                "updated_at": Utc::now()
+            }
+        };
+
+        let result = db.assets().update_one(filter, update).await?;
+        if result.matched_count == 0 {
+            return Err(ApiError::NotFound(format!("Asset not found: {}", id)));
+        }
+
+        Self::get_by_id(db, id).await
     }
 }

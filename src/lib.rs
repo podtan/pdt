@@ -4,6 +4,7 @@
 //! company-specific concepts, documents, and their relationships.
 
 pub mod auth;
+pub mod cedar;
 pub mod config;
 pub mod db;
 pub mod error;

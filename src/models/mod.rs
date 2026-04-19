@@ -1,12 +1,14 @@
 //! Data models for PDT
 
 mod asset;
+mod auth_context;
 mod audit;
 mod collection;
 mod relation;
 mod tag;
 
-pub use asset::{generate_snippet, Asset, CreateAssetRequest, SearchResult, TagSummary, UpdateAssetRequest};
+pub use asset::{generate_snippet, Asset, CreateAssetRequest, SearchResult, TagSummary, UpdateAssetRequest, UpdateAuthContextRequest};
+pub use auth_context::AuthContext;
 pub use audit::{AuditAction, AuditEntry};
 pub use collection::{
     AddAssetRequest, Collection, CreateCollectionRequest, UpdateCollectionRequest,
