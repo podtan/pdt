@@ -13,7 +13,7 @@ entity User = {
 };
 
 entity Asset = {
-    created_by?: String,
+    created_by?: Set<User>,
     visibility?: String,
     confidentiality?: String,
     owner_groups?: Set<String>,

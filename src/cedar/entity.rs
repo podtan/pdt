@@ -27,9 +27,16 @@ pub fn asset_to_cedar_entity(asset: &Asset) -> Entity {
     let mut attrs: HashMap<String, RestrictedExpression> = HashMap::new();
 
     // From Asset directly (no duplication)
+    // Schema type: Set<User> — stores creator as a set of User entity UIDs
+    // so that `principal in resource.created_by` works for ownership checks.
+    let creator_uid: EntityUid = format!("User::\"{}\"", asset.created_by)
+        .parse()
+        .expect("Invalid creator UID");
     attrs.insert(
         "created_by".to_string(),
-        RestrictedExpression::new_string(asset.created_by.clone()),
+        RestrictedExpression::new_set(vec![
+            RestrictedExpression::new_entity_uid(creator_uid),
+        ]),
     );
 
     // From AuthContext (auth-only fields)

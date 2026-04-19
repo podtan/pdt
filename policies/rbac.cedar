@@ -9,10 +9,31 @@ permit(
     action == Action::"View",
     resource
 ) when {
-    !resource has visibility
-    || resource.visibility == "public"
-    || resource.visibility == "org"
-    || resource.visibility == "team"
+    !(resource has visibility)
+};
+
+permit(
+    principal,
+    action == Action::"View",
+    resource
+) when {
+    resource has visibility && resource.visibility == "public"
+};
+
+permit(
+    principal,
+    action == Action::"View",
+    resource
+) when {
+    resource has visibility && resource.visibility == "org"
+};
+
+permit(
+    principal,
+    action == Action::"View",
+    resource
+) when {
+    resource has visibility && resource.visibility == "team"
 };
 
 // Only users with admin role can delete assets
@@ -30,35 +51,7 @@ permit(
     action == Action::"Edit",
     resource
 ) when {
-    resource has created_by && resource.created_by == principal
-};
-
-// Admins can edit any asset
-permit(
-    principal,
-    action == Action::"Edit",
-    resource
-) when {
-    principal has role && principal.role == "admin"
-};
-
-// Only admins can tag or relate assets
-permit(
-    principal,
-    action == Action::"Tag",
-    resource
-) when {
-    principal has role && principal.role == "admin"
-    || resource has created_by && resource.created_by == principal
-};
-
-permit(
-    principal,
-    action == Action::"Relate",
-    resource
-) when {
-    principal has role && principal.role == "admin"
-    || resource has created_by && resource.created_by == principal
+    resource has created_by && principal in resource.created_by
 };
 
 // Team visibility: users in owner_groups can view team-scoped assets
@@ -70,7 +63,7 @@ permit(
     resource has visibility && resource.visibility == "team"
     && resource has owner_groups
     && principal has groups
-    && resource.owner_groups intersects principal.groups
+    && resource.owner_groups.containsAny(principal.groups)
 };
 
 // Team edit: users in owner_groups can edit team-scoped assets
@@ -82,7 +75,7 @@ permit(
     resource has visibility && resource.visibility == "team"
     && resource has owner_groups
     && principal has groups
-    && resource.owner_groups intersects principal.groups
+    && resource.owner_groups.containsAny(principal.groups)
 };
 
 // Private visibility: only the creator can view
@@ -91,6 +84,5 @@ permit(
     action == Action::"View",
     resource
 ) when {
-    resource has visibility && resource.visibility == "private"
-    && resource has created_by && resource.created_by == principal
+    resource has created_by && principal in resource.created_by
 };
