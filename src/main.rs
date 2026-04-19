@@ -73,27 +73,27 @@ async fn main() -> anyhow::Result<()> {
         // Asset routes
         .route("/api/assets", post(handlers::assets::create_asset))
         .route("/api/assets", get(handlers::assets::list_assets))
-        .route("/api/assets/:id", get(handlers::assets::get_asset))
-        .route("/api/assets/:id", put(handlers::assets::update_asset))
-        .route("/api/assets/:id", delete(handlers::assets::delete_asset))
-        .route("/api/assets/:id/tags", post(handlers::assets::add_tag))
+        .route("/api/assets/{id}", get(handlers::assets::get_asset))
+        .route("/api/assets/{id}", put(handlers::assets::update_asset))
+        .route("/api/assets/{id}", delete(handlers::assets::delete_asset))
+        .route("/api/assets/{id}/tags", post(handlers::assets::add_tag))
         .route(
-            "/api/assets/:id/tags/:tag_id",
+            "/api/assets/{id}/tags/{tag_id}",
             delete(handlers::assets::remove_tag),
         )
         // Relation routes
         .route("/api/relations", post(handlers::relations::create_relation))
-        .route("/api/relations/:id", get(handlers::relations::get_relation))
+        .route("/api/relations/{id}", get(handlers::relations::get_relation))
         .route(
-            "/api/relations/:id",
+            "/api/relations/{id}",
             delete(handlers::relations::delete_relation),
         )
         .route(
-            "/api/assets/:id/relations",
+            "/api/assets/{id}/relations",
             get(handlers::relations::get_asset_relations),
         )
         .route(
-            "/api/assets/:id/graph",
+            "/api/assets/{id}/graph",
             get(handlers::relations::traverse_graph),
         )
         // Collection routes (no Cedar — use Services directly)
@@ -106,23 +106,23 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::collections::list_collections),
         )
         .route(
-            "/api/collections/:id",
+            "/api/collections/{id}",
             get(handlers::collections::get_collection),
         )
         .route(
-            "/api/collections/:id",
+            "/api/collections/{id}",
             put(handlers::collections::update_collection),
         )
         .route(
-            "/api/collections/:id",
+            "/api/collections/{id}",
             delete(handlers::collections::delete_collection),
         )
         .route(
-            "/api/collections/:id/assets",
+            "/api/collections/{id}/assets",
             post(handlers::collections::add_asset),
         )
         .route(
-            "/api/collections/:id/assets/:asset_id",
+            "/api/collections/{id}/assets/{asset_id}",
             delete(handlers::collections::remove_asset),
         )
         // Search routes (with Cedar filtering)
@@ -130,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
         // Audit routes
         .route("/api/audit", get(handlers::audit::list_audit_entries))
         .route(
-            "/api/assets/:id/history",
+            "/api/assets/{id}/history",
             get(handlers::audit::get_asset_history),
         )
         // Middleware
