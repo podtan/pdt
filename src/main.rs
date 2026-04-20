@@ -81,6 +81,11 @@ async fn main() -> anyhow::Result<()> {
             "/api/assets/{id}/tags/{tag_id}",
             delete(handlers::assets::remove_tag),
         )
+        // Auth context route (Cedar visibility/ownership management)
+        .route(
+            "/api/assets/{id}/auth-context",
+            put(handlers::assets::update_auth_context),
+        )
         // Relation routes
         .route("/api/relations", post(handlers::relations::create_relation))
         .route("/api/relations/{id}", get(handlers::relations::get_relation))
