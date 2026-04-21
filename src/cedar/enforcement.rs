@@ -63,21 +63,10 @@ impl FromRef<AppRawState> for Services {
 /// Build JwtClaims from AuthenticatedUser for Cedar evaluation.
 /// This is used by handlers that need claims for Cedar enforcement
 /// (e.g., search, list filtering) but use AuthenticatedUser for extraction.
+///
+/// Propagates the original `extra` map (role, groups, etc.) from the real JWT.
 pub fn extract_claims_for_cedar(user: &AuthenticatedUser) -> JwtClaims {
-    let mut extra = std::collections::HashMap::new();
-    extra.insert("role".to_string(), serde_json::Value::String("admin".to_string()));
-
-    JwtClaims {
-        sub: user.user_id.clone(),
-        iss: "pdt".to_string(),
-        aud: None,
-        exp: i64::MAX,
-        iat: None,
-        email: user.email.clone(),
-        name: None,
-        preferred_username: user.username.clone(),
-        extra,
-    }
+    user.to_cedar_claims()
 }
 
 /// Check whether Cedar authorization should be enforced for this asset.

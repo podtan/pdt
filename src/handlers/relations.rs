@@ -24,22 +24,11 @@ fn default_depth() -> u32 {
     3
 }
 
-/// Extract JwtClaims from AuthenticatedUser (reconstructed from auth layer).
+/// Extract JwtClaims from AuthenticatedUser.
+///
+/// Propagates the original `extra` map (role, groups, etc.) from the real JWT.
 fn extract_claims(user: &AuthenticatedUser) -> JwtClaims {
-    let mut extra = std::collections::HashMap::new();
-    extra.insert("role".to_string(), serde_json::Value::String("admin".to_string()));
-
-    JwtClaims {
-        sub: user.user_id.clone(),
-        iss: "pdt".to_string(),
-        aud: None,
-        exp: i64::MAX,
-        iat: None,
-        email: user.email.clone(),
-        name: None,
-        preferred_username: user.username.clone(),
-        extra,
-    }
+    user.to_cedar_claims()
 }
 
 /// Create a new relation

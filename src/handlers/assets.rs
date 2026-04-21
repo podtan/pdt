@@ -207,22 +207,10 @@ pub async fn update_auth_context(
     Ok(Json(asset))
 }
 
-/// Extract JwtClaims from the request extensions (inserted by AuthLayer).
+/// Extract JwtClaims from the AuthenticatedUser.
 ///
-/// Falls back to a default admin claims when running in dev mode (no real JWT).
+/// Reconstructs JwtClaims preserving the original `extra` map (role, groups, etc.)
+/// that was extracted from the real JWT by the auth middleware.
 fn extract_claims(user: &AuthenticatedUser) -> JwtClaims {
-    let mut extra = std::collections::HashMap::new();
-    extra.insert("role".to_string(), serde_json::Value::String("admin".to_string()));
-
-    JwtClaims {
-        sub: user.user_id.clone(),
-        iss: "pdt".to_string(),
-        aud: None,
-        exp: i64::MAX,
-        iat: None,
-        email: user.email.clone(),
-        name: None,
-        preferred_username: user.username.clone(),
-        extra,
-    }
+    user.to_cedar_claims()
 }

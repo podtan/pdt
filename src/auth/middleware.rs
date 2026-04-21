@@ -125,6 +125,12 @@ fn inject_mock_claims(req: &mut Request) {
         "role".to_string(),
         serde_json::Value::String("admin".to_string()),
     );
+    extra.insert(
+        "groups".to_string(),
+        serde_json::Value::Array(vec![
+            serde_json::Value::String("developers".to_string()),
+        ]),
+    );
 
     let claims = JwtClaims {
         sub: "dev-user-id".to_string(),
