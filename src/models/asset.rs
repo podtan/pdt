@@ -49,6 +49,10 @@ pub struct CreateAssetRequest {
     pub tags: Vec<super::AddTagRequest>, // Should include at least one AssetType tag
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
+    /// Optional auth_context to set at creation time (overrides defaults).
+    /// If omitted, defaults to public/internal/empty.
+    #[serde(default)]
+    pub auth_context: Option<super::AuthContext>,
 }
 
 /// Request to update an existing asset

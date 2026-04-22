@@ -67,9 +67,12 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Auth layer initialized (enabled: {})", config.auth.enabled);
 
     // Build router
-    let app = Router::new()
-        // Health check
-        .route("/health", get(handlers::health::health_check))
+    // Public routes (no auth)
+    let public_routes = Router::new()
+        .route("/health", get(handlers::health::health_check));
+
+    // Protected routes (auth + Cedar)
+    let protected_routes = Router::new()
         // Asset routes
         .route("/api/assets", post(handlers::assets::create_asset))
         .route("/api/assets", get(handlers::assets::list_assets))
@@ -138,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/assets/{id}/history",
             get(handlers::audit::get_asset_history),
         )
-        // Middleware
+        // Middleware (auth + tracing + CORS)
         .layer(TraceLayer::new_for_http())
         .layer(auth_layer)
         .layer(
@@ -146,7 +149,11 @@ async fn main() -> anyhow::Result<()> {
                 .allow_origin(Any)
                 .allow_methods(Any)
                 .allow_headers(Any),
-        )
+        );
+
+    let app = Router::new()
+        .merge(public_routes)
+        .merge(protected_routes)
         .with_state((
             services,
             authorizer.map(Arc::new),

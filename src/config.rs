@@ -137,6 +137,7 @@ impl Config {
                     .unwrap_or_else(|_| "false".to_string())
                     .parse()
                     .unwrap_or(false),
+                userinfo_url: env::var("AUTH_USERINFO_URL").ok(),
             },
             cedar,
         })

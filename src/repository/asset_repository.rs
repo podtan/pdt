@@ -45,7 +45,7 @@ impl AssetRepository {
             created_by: user_id.to_string(),
             updated_by: user_id.to_string(),
             deleted_at: None,
-            auth_context: Some(AuthContext::default()),
+            auth_context: request.auth_context.map(Some).unwrap_or_else(|| Some(AuthContext::default())),
         };
 
         db.assets().insert_one(&asset).await?;

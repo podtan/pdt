@@ -99,7 +99,20 @@ where
                 .validate_jwt_with_options(&token, &config.issuer_url, audience, &options)
                 .await
             {
-                Ok(claims) => {
+                Ok(mut claims) => {
+                    // Adaptive claims enrichment: fill missing groups/role from OIDC userinfo
+                    // This makes PDT work with Kanidm (no groups in AT) and Keycloak/Auth0 (groups in AT)
+                    if let Err(e) = client
+                        .enrich_claims_with_userinfo(
+                            &mut claims,
+                            &token,
+                            &config.issuer_url,
+                            config.userinfo_url.as_deref(),
+                        )
+                        .await
+                    {
+                        tracing::warn!("Userinfo enrichment failed (non-fatal): {}", e);
+                    }
                     req.extensions_mut().insert(claims);
                     inner.call(req).await
                 }

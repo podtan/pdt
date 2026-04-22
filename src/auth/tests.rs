@@ -11,6 +11,7 @@ mod config_tests {
         assert_eq!(config.issuer_url, "http://localhost:8080");
         assert_eq!(config.expected_audience, None);
         assert!(!config.dev_mode);
+        assert_eq!(config.userinfo_url, None);
     }
 
     #[test]
@@ -20,11 +21,13 @@ mod config_tests {
             issuer_url: "https://auth.example.com".to_string(),
             expected_audience: Some("custom-api".to_string()),
             dev_mode: true,
+            userinfo_url: Some("https://auth.example.com/userinfo".to_string()),
         };
         assert!(!config.enabled);
         assert_eq!(config.issuer_url, "https://auth.example.com");
         assert_eq!(config.expected_audience, Some("custom-api".to_string()));
         assert!(config.dev_mode);
+        assert_eq!(config.userinfo_url, Some("https://auth.example.com/userinfo".to_string()));
     }
 
     #[test]
@@ -34,8 +37,10 @@ mod config_tests {
             issuer_url: "https://auth.example.com".to_string(),
             expected_audience: None,
             dev_mode: false,
+            userinfo_url: None,
         };
         assert!(config.expected_audience.is_none());
+        assert!(config.userinfo_url.is_none());
     }
 }
 
@@ -195,6 +200,7 @@ mod auth_config_integration_tests {
             issuer_url: "https://auth.example.com".to_string(),
             expected_audience: Some("test-api".to_string()),
             dev_mode: false,
+            userinfo_url: None,
         };
 
         let config2 = config1.clone();
@@ -202,6 +208,7 @@ mod auth_config_integration_tests {
         assert_eq!(config1.issuer_url, config2.issuer_url);
         assert_eq!(config1.expected_audience, config2.expected_audience);
         assert_eq!(config1.dev_mode, config2.dev_mode);
+        assert_eq!(config1.userinfo_url, config2.userinfo_url);
     }
 
     #[test]
@@ -219,11 +226,13 @@ mod auth_config_integration_tests {
             issuer_url: "https://keycloak.example.com/auth/realms/myrealm".to_string(),
             expected_audience: Some("my-service".to_string()),
             dev_mode: true,
+            userinfo_url: Some("https://keycloak.example.com/auth/realms/myrealm/protocol/openid-connect/userinfo".to_string()),
         };
 
         assert!(config.enabled);
         assert!(config.issuer_url.contains("keycloak"));
         assert_eq!(config.expected_audience, Some("my-service".to_string()));
         assert!(config.dev_mode);
+        assert!(config.userinfo_url.as_ref().unwrap().contains("userinfo"));
     }
 }
