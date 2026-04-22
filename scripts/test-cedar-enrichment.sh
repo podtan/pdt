@@ -159,7 +159,7 @@ pdt_api() {
 section "STEP 2: Verify PDT accepts the token (claims enrichment)"
 
 LIST_RESPONSE=$(pdt_api GET "/api/assets?limit=3")
-LIST_DATA=$(echo "$LIST_RESPONSE" | jq -r '.data[0].id // .error // empty' 2>/dev/null)
+LIST_DATA=$(echo "$LIST_RESPONSE" | jq -r '.data[0]._id // .data[0].id // .error // empty' 2>/dev/null)
 
 if [ -n "$LIST_DATA" ] && [ "$LIST_DATA" != "null" ]; then
   ITEM_COUNT=$(echo "$LIST_RESPONSE" | jq '.data | length' 2>/dev/null || echo "?")
