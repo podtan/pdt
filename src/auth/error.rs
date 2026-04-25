@@ -27,7 +27,10 @@ impl IntoResponse for AuthError {
             AuthError::InvalidClaims(_) => {
                 (StatusCode::FORBIDDEN, self.to_string()).into_response()
             }
-            _ => (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response(),
+            AuthError::PepError(ref e) => {
+                (e.status_code(), self.to_string()).into_response()
+            }
+            _ => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response(),
         }
     }
 }
