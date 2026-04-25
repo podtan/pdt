@@ -9,7 +9,7 @@
 #   2. Call PDT API (running on port 8082) with the real JWT
 #   3. Verify PDT successfully enriches claims via /userinfo endpoint
 #      (Kanidm access tokens have NO groups/role — enrichment is required)
-#   4. Create a Cedar-enforced asset with team visibility
+#   4. Create a Cedar-enforced asset with team visibility (auth_context in single POST)
 #   5. Verify pdt_test (member of developers + pdt_admins) can View/Edit it
 #   6. Verify Cedar denies Delete on non-owned team assets (no admin delete policy for team)
 #   7. Verify existing grandfathered assets (no auth_context) are still accessible
@@ -177,37 +177,33 @@ TIMESTAMP=$(date +%s)
 TEST_ASSET_TITLE="Cedar Enrichment Test $TIMESTAMP"
 TEST_ASSET_CONTENT="This asset tests Cedar authorization with enriched userinfo claims."
 
-# Step 3a: Create the asset
+# Single-step create with auth_context inline (no need for a separate PUT)
 CREATE_RESPONSE=$(pdt_api POST "/api/assets" "{
   \"title\": \"$TEST_ASSET_TITLE\",
-  \"content\": \"$TEST_ASSET_CONTENT\"
+  \"content\": \"$TEST_ASSET_CONTENT\",
+  \"auth_context\": {
+    \"visibility\": \"team\",
+    \"owner_groups\": [\"developers\"],
+    \"confidentiality\": \"internal\"
+  }
 }")
 
 TEST_ASSET_ID=$(echo "$CREATE_RESPONSE" | jq -r '.id // ._id // empty' 2>/dev/null)
 
 if [ -z "$TEST_ASSET_ID" ] || [ "$TEST_ASSET_ID" = "null" ]; then
-  fail_test "Failed to create test asset" "$CREATE_ERROR"
+  fail_test "Failed to create test asset" "$(echo "$CREATE_RESPONSE" | jq -r '.error // empty' 2>/dev/null)"
   echo "$CREATE_RESPONSE" | python3 -m json.tool 2>/dev/null | sed 's/^/  /'
   section "RESULTS"
   echo -e "  ${BOLD}Passed: $PASS | Failed: $FAIL${NC}"
   exit 1
 fi
 
-# Step 3b: Set auth_context to team visibility
-CTX_RESPONSE=$(pdt_api PUT "/api/assets/$TEST_ASSET_ID/auth-context" "{
-  \"visibility\": \"team\",
-  \"owner_groups\": [\"developers\"],
-  \"confidentiality\": \"internal\"
-}")
-
-CTX_VIS=$(echo "$CTX_RESPONSE" | jq -r '.auth_context.visibility // empty' 2>/dev/null)
+CTX_VIS=$(echo "$CREATE_RESPONSE" | jq -r '.auth_context.visibility // empty' 2>/dev/null)
 if [ "$CTX_VIS" = "team" ]; then
-  echo "    Auth context set via PUT /auth-context"
+  pass_test "Created asset with auth_context inline (id=$TEST_ASSET_ID)"
 else
-  echo "    ⚠️  Could not set auth_context (HTTP $PDT_HTTP_CODE)."
+  fail_test "auth_context not set on created asset" "visibility='$CTX_VIS'"
 fi
-
-pass_test "Created asset with auth_context (id=$TEST_ASSET_ID)"
 echo "    visibility      : team"
 echo "    owner_groups    : [\"developers\"]"
 echo "    confidentiality : internal"
