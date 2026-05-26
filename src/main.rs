@@ -1,5 +1,6 @@
 //! PDT Server Entry Point
 
+use anyhow::Context;
 use axum::{
     routing::{delete, get, post, put},
     Router,
@@ -160,7 +161,9 @@ async fn main() -> anyhow::Result<()> {
         ));
 
     // Start server
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
+    let addr = format!("{}:{}", config.server.host, config.server.port)
+        .parse::<SocketAddr>()
+        .context("Invalid listen address")?;
     tracing::info!("Starting PDT server on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
