@@ -24,8 +24,8 @@ bson = { version = "2", features = ["chrono-0_4", "uuid-1"] }
 # Authentication & Authorization
 cedar-policy = "4"
 
-# PEP library (local path — cedar feature not yet published to crates.io)
-pep = { path = "../pep", features = ["cedar", "oidc-resource-server", "config", "axum"] }
+# PEP library
+pep = { version = "0.3.1", features = ["cedar", "oidc-resource-server", "config", "axum"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
