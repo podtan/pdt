@@ -39,16 +39,11 @@ impl RelationRepository {
     }
 
     /// Get relation by ID
-    ///
-    /// Uses find() + try_next() instead of find_one() to work around
-    /// a DocumentDB (PostgreSQL-backed) bug where find_one triggers
-    /// "trying to open a pruned relation" errors.
     pub async fn get_by_id(db: &Database, id: &str) -> Result<Relation> {
         let filter = doc! { "_id": id };
 
-        let mut cursor = db.relations().find(filter).await?;
-        cursor
-            .try_next()
+        db.relations()
+            .find_one(filter)
             .await?
             .ok_or_else(|| ApiError::NotFound(format!("Relation not found: {}", id)))
     }

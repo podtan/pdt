@@ -1,6 +1,6 @@
 .git
 .gitignore
-target/debug/
+target/
 *.md
 .env
 .DS_Store
