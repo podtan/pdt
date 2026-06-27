@@ -54,14 +54,19 @@ impl AssetRepository {
     }
 
     /// Get asset by ID
+    ///
+    /// Uses find() + try_next() instead of find_one() to work around
+    /// a DocumentDB (PostgreSQL-backed) bug where find_one triggers
+    /// "trying to open a pruned relation" errors.
     pub async fn get_by_id(db: &Database, id: &str) -> Result<Asset> {
         let filter = doc! {
             "_id": id,
             "deleted_at": { "$exists": false }
         };
 
-        db.assets()
-            .find_one(filter)
+        let mut cursor = db.assets().find(filter).await?;
+        cursor
+            .try_next()
             .await?
             .ok_or_else(|| ApiError::NotFound(format!("Asset not found: {}", id)))
     }
