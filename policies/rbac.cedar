@@ -99,3 +99,22 @@ permit(
 ) when {
     resource has created_by && principal in resource.created_by
 };
+
+// All authenticated users can create, tag, and relate assets
+permit(
+    principal,
+    action == Action::"Create",
+    resource
+);
+
+permit(
+    principal,
+    action == Action::"Tag",
+    resource
+);
+
+permit(
+    principal,
+    action == Action::"Relate",
+    resource
+);
