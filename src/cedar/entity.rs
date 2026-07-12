@@ -107,12 +107,24 @@ pub fn user_to_cedar_principal(claims: &JwtClaims) -> Entity {
     // PEP's base entity already has email, name, username from JWT claims.
     // We can't iterate Cedar Entity attrs directly, so we rebuild from claims here.
 
-    // Add PDT-specific: role (single string from extra claims)
+    // Add PDT-specific: role from extra claims — handle both string and array of strings.
+    //
+    // Kanidm's userinfo endpoint returns `role` as a JSON array (e.g. `["admin"]`)
+    // because claim maps can map multiple groups to multiple role values.
+    // Some IdPs (e.g. Auth0) return a single string instead.
     if let Some(role) = claims.extra.get("role") {
-        if let Some(role_str) = role.as_str() {
+        let role_str = match role {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Array(arr) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .next(),
+            _ => None,
+        };
+        if let Some(role_str) = role_str {
             attrs.insert(
                 "role".to_string(),
-                RestrictedExpression::new_string(role_str.to_string()),
+                RestrictedExpression::new_string(role_str),
             );
         }
     }
