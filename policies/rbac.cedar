@@ -41,14 +41,6 @@ permit(
     resource has visibility && resource.visibility == "org"
 };
 
-permit(
-    principal,
-    action == Action::"View",
-    resource
-) when {
-    resource has visibility && resource.visibility == "team"
-};
-
 // Only users with admin role can delete assets
 permit(
     principal,
