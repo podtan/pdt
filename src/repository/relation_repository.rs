@@ -136,6 +136,33 @@ impl RelationRepository {
         Ok(results)
     }
 
+    /// Get all descendant asset IDs reachable from a root via outgoing relations.
+    ///
+    /// Performs BFS traversal following all outgoing relations (from_asset_id == current).
+    /// Returns asset IDs in BFS order, excluding the root itself.
+    /// Used for cascading auth_context updates to child assets.
+    pub async fn get_descendants(db: &Database, root_id: &str) -> Result<Vec<String>> {
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+        let mut results: Vec<String> = Vec::new();
+
+        queue.push_back(root_id.to_string());
+        visited.insert(root_id.to_string());
+
+        while let Some(current_id) = queue.pop_front() {
+            let relations = Self::get_asset_relations(db, &current_id).await?;
+            for relation in relations {
+                if relation.from_asset_id == current_id && !visited.contains(&relation.to_asset_id) {
+                    visited.insert(relation.to_asset_id.clone());
+                    results.push(relation.to_asset_id.clone());
+                    queue.push_back(relation.to_asset_id);
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
     /// Check for cycles that would be created by adding a relation
     pub async fn would_create_cycle(db: &Database, from_id: &str, to_id: &str) -> Result<bool> {
         // Check if there's already a path from to_id to from_id

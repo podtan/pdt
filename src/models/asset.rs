@@ -76,6 +76,9 @@ pub struct UpdateAuthContextRequest {
     pub owner_groups: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidentiality: Option<String>,
+    /// When true, cascade auth_context to all descendant assets via relation graph
+    #[serde(default)]
+    pub cascade: bool,
 }
 
 /// Compact search result — returned by /api/search by default

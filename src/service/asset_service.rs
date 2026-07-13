@@ -193,17 +193,43 @@ impl AssetService {
 
         // Merge request fields into existing auth_context (or create default)
         let mut ctx = asset.auth_context.unwrap_or_default();
-        if let Some(visibility) = request.visibility {
-            ctx.visibility = visibility;
+        if let Some(ref visibility) = request.visibility {
+            ctx.visibility = visibility.clone();
         }
-        if let Some(owner_groups) = request.owner_groups {
-            ctx.owner_groups = owner_groups;
+        if let Some(ref owner_groups) = request.owner_groups {
+            ctx.owner_groups = owner_groups.clone();
         }
-        if let Some(confidentiality) = request.confidentiality {
-            ctx.confidentiality = confidentiality;
+        if let Some(ref confidentiality) = request.confidentiality {
+            ctx.confidentiality = confidentiality.clone();
         }
 
         let updated = AssetRepository::update_auth_context(db, id, &ctx).await?;
+
+        // Cascade to descendants via relation graph if requested
+        let cascaded_count = if request.cascade {
+            let descendants = RelationRepository::get_descendants(db, id).await?;
+            let count = descendants.len();
+            for child_id in &descendants {
+                if let Ok(child) = AssetRepository::get_by_id(db, child_id).await {
+                    // Merge: only update fields that were explicitly set in the request,
+                    // preserving child-specific overrides for unset fields
+                    let mut child_ctx = child.auth_context.unwrap_or_default();
+                    if request.visibility.is_some() {
+                        child_ctx.visibility = ctx.visibility.clone();
+                    }
+                    if request.owner_groups.is_some() {
+                        child_ctx.owner_groups = ctx.owner_groups.clone();
+                    }
+                    if request.confidentiality.is_some() {
+                        child_ctx.confidentiality = ctx.confidentiality.clone();
+                    }
+                    let _ = AssetRepository::update_auth_context(db, child_id, &child_ctx).await;
+                }
+            }
+            count
+        } else {
+            0
+        };
 
         // Audit
         AuditRepository::create(
@@ -214,6 +240,8 @@ impl AssetService {
             json!({
                 "action": "update_auth_context",
                 "auth_context": &ctx,
+                "cascade": request.cascade,
+                "cascaded_count": cascaded_count,
             }),
             user_id,
         )
