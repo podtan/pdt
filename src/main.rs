@@ -12,9 +12,11 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use pdt::{auth::middleware::AuthLayer, config::Config, db::Database, handlers, service::Services};
+use pdt::{auth::middleware::AuthLayer, config::Config, db::Database, handlers, openapi::ApiDoc, service::Services};
 use std::sync::Arc;
 use pep::oidc_resource_server::ResourceServerClient;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -155,6 +157,11 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
+        // OpenAPI spec + Swagger UI (public, no auth)
+        .merge(
+            SwaggerUi::new("/swagger-ui")
+                .url("/api-docs/openapi.json", ApiDoc::openapi()),
+        )
         .with_state((
             services,
             authorizer.map(Arc::new),
@@ -165,6 +172,8 @@ async fn main() -> anyhow::Result<()> {
         .parse::<SocketAddr>()
         .context("Invalid listen address")?;
     tracing::info!("Starting PDT server on {}", addr);
+    tracing::info!("Swagger UI: http://{}/swagger-ui", addr);
+    tracing::info!("OpenAPI spec: http://{}/api-docs/openapi.json", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

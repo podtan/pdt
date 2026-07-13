@@ -17,6 +17,7 @@ pub use relation::{CreateRelationRequest, Relation, RelationType};
 pub use tag::{validate_category, validate_value, AddTagRequest, Tag};
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Custom datetime serialization that writes:
 /// - **JSON** (human-readable): RFC3339 strings for API responses
@@ -93,7 +94,7 @@ pub mod datetime_format {
 }
 
 /// Pagination parameters
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct PaginationParams {
     #[serde(default = "default_limit")]
     pub limit: i64,
@@ -106,7 +107,7 @@ fn default_limit() -> i64 {
 }
 
 /// Paginated response wrapper
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct PaginatedResponse<T> {
     pub data: Vec<T>,
     pub next_cursor: Option<String>,

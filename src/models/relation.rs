@@ -2,12 +2,13 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use std::collections::HashMap;
 
 use super::datetime_format;
 
 /// Types of relationships between assets
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationType {
     /// Asset includes other assets
@@ -38,7 +39,7 @@ impl std::fmt::Display for RelationType {
 }
 
 /// Relationship between two assets
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Relation {
     #[serde(rename = "_id")]
     pub id: String,
@@ -53,7 +54,7 @@ pub struct Relation {
 }
 
 /// Request to create a new relation
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateRelationRequest {
     pub from_asset_id: String,
     pub to_asset_id: String,

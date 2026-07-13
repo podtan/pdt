@@ -2,11 +2,12 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use super::datetime_format;
 
 /// Types of audited actions
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditAction {
     Create,
@@ -37,7 +38,7 @@ impl std::fmt::Display for AuditAction {
 }
 
 /// Audit log entry
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AuditEntry {
     #[serde(rename = "_id")]
     pub id: String,

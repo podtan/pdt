@@ -5,6 +5,7 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use utoipa::IntoParams;
 
 use crate::error::Result;
 use crate::models::{AuditEntry, PaginatedResponse};
@@ -16,7 +17,8 @@ fn default_limit() -> i64 {
 
 /// Query parameters for audit list
 /// Note: pagination fields inlined to work around serde_urlencoded#33 (flatten breaks numeric deserialize)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct AuditListParams {
     #[serde(default = "default_limit")]
     pub limit: i64,
@@ -28,7 +30,8 @@ pub struct AuditListParams {
 }
 
 /// Query parameters for asset history
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct HistoryParams {
     #[serde(default = "default_history_limit")]
     pub limit: i64,
@@ -39,6 +42,15 @@ fn default_history_limit() -> i64 {
 }
 
 /// List audit entries
+#[utoipa::path(
+    get,
+    path = "/api/audit",
+    params(AuditListParams),
+    responses(
+        (status = 200, description = "List of audit entries", body = PaginatedResponse<AuditEntry>),
+    ),
+    tag = "audit",
+)]
 pub async fn list_audit_entries(
     State(services): State<Services>,
     Query(params): Query<AuditListParams>,
@@ -61,6 +73,19 @@ pub async fn list_audit_entries(
 }
 
 /// Get history for a specific asset
+#[utoipa::path(
+    get,
+    path = "/api/assets/{id}/history",
+    params(
+        ("id" = String, Path, description = "Asset ID"),
+        HistoryParams,
+    ),
+    responses(
+        (status = 200, description = "Asset change history", body = [AuditEntry]),
+        (status = 404, description = "Asset not found"),
+    ),
+    tag = "audit",
+)]
 pub async fn get_asset_history(
     State(services): State<Services>,
     Path(id): Path<String>,

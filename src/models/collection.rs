@@ -2,12 +2,13 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use super::datetime_format;
 use super::Tag;
 
 /// Named collection of assets
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Collection {
     #[serde(rename = "_id")]
     pub id: String,
@@ -27,7 +28,7 @@ pub struct Collection {
 }
 
 /// Request to create a new collection
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateCollectionRequest {
     pub name: String,
     #[serde(default)]
@@ -37,7 +38,7 @@ pub struct CreateCollectionRequest {
 }
 
 /// Request to update a collection
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct UpdateCollectionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -46,7 +47,7 @@ pub struct UpdateCollectionRequest {
 }
 
 /// Request to add an asset to a collection
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct AddAssetRequest {
     pub asset_id: String,
 }

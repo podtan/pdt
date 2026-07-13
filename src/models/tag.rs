@@ -6,6 +6,7 @@
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use std::sync::LazyLock;
 
 use super::datetime_format;
@@ -52,7 +53,7 @@ pub fn validate_value(value: &str) -> Result<(), String> {
 /// - `lang` - Language (en, fa)
 /// - `priority` - Priority (high, medium, low)
 /// - `scope` - Feature/component scope
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Tag {
     pub id: String,
     pub category: String,
@@ -63,7 +64,7 @@ pub struct Tag {
 }
 
 /// Request to add a tag to an asset
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct AddTagRequest {
     pub category: String,
     pub value: String,

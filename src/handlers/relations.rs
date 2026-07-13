@@ -6,6 +6,7 @@ use axum::{
 };
 use pep::oidc::types::JwtClaims;
 use serde::Deserialize;
+use utoipa::IntoParams;
 
 use crate::auth::AuthenticatedUser;
 use crate::cedar::enforcement::AppState;
@@ -14,7 +15,8 @@ use crate::models::{CreateRelationRequest, Relation};
 use crate::service::{relation_service::GraphNode, RelationService};
 
 /// Query parameters for graph traversal
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct TraverseParams {
     #[serde(default = "default_depth")]
     pub depth: u32,
@@ -32,6 +34,16 @@ fn extract_claims(user: &AuthenticatedUser) -> JwtClaims {
 }
 
 /// Create a new relation
+#[utoipa::path(
+    post,
+    path = "/api/relations",
+    request_body = CreateRelationRequest,
+    responses(
+        (status = 200, description = "Relation created successfully", body = Relation),
+        (status = 404, description = "Source or target asset not found"),
+    ),
+    tag = "relations",
+)]
 pub async fn create_relation(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -58,6 +70,18 @@ pub async fn create_relation(
 }
 
 /// Get relation by ID
+#[utoipa::path(
+    get,
+    path = "/api/relations/{id}",
+    params(
+        ("id" = String, Path, description = "Relation ID"),
+    ),
+    responses(
+        (status = 200, description = "Relation found", body = Relation),
+        (status = 404, description = "Relation not found"),
+    ),
+    tag = "relations",
+)]
 pub async fn get_relation(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -67,6 +91,18 @@ pub async fn get_relation(
 }
 
 /// Delete a relation
+#[utoipa::path(
+    delete,
+    path = "/api/relations/{id}",
+    params(
+        ("id" = String, Path, description = "Relation ID"),
+    ),
+    responses(
+        (status = 200, description = "Relation deleted successfully"),
+        (status = 404, description = "Relation not found"),
+    ),
+    tag = "relations",
+)]
 pub async fn delete_relation(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -93,6 +129,18 @@ pub async fn delete_relation(
 }
 
 /// Get all relations for an asset
+#[utoipa::path(
+    get,
+    path = "/api/assets/{id}/relations",
+    params(
+        ("id" = String, Path, description = "Asset ID"),
+    ),
+    responses(
+        (status = 200, description = "List of relations", body = [Relation]),
+        (status = 404, description = "Asset not found"),
+    ),
+    tag = "relations",
+)]
 pub async fn get_asset_relations(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -102,6 +150,19 @@ pub async fn get_asset_relations(
 }
 
 /// Traverse the relationship graph from an asset
+#[utoipa::path(
+    get,
+    path = "/api/assets/{id}/graph",
+    params(
+        ("id" = String, Path, description = "Asset ID"),
+        TraverseParams,
+    ),
+    responses(
+        (status = 200, description = "Graph traversal results", body = [GraphNode]),
+        (status = 404, description = "Asset not found"),
+    ),
+    tag = "relations",
+)]
 pub async fn traverse_graph(
     State(state): State<AppState>,
     Path(id): Path<String>,

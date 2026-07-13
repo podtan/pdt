@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use std::collections::HashMap;
 
 use super::auth_context::AuthContext;
@@ -13,7 +14,7 @@ use super::Tag;
 // Common asset type tag values: document, concept, idea, data_entity, reference
 
 /// Knowledge asset document
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Asset {
     #[serde(rename = "_id")]
     pub id: String,
@@ -40,7 +41,7 @@ pub struct Asset {
 
 /// Request to create a new asset
 /// Note: Asset type should be specified via tags with category "asset_type"
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct CreateAssetRequest {
     pub title: String,
     #[serde(default)]
@@ -56,7 +57,7 @@ pub struct CreateAssetRequest {
 }
 
 /// Request to update an existing asset
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct UpdateAssetRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -67,7 +68,7 @@ pub struct UpdateAssetRequest {
 }
 
 /// Request to update the authorization context of an asset
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct UpdateAuthContextRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visibility: Option<String>,
@@ -78,7 +79,7 @@ pub struct UpdateAuthContextRequest {
 }
 
 /// Compact search result — returned by /api/search by default
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SearchResult {
     #[serde(rename = "_id")]
     pub id: String,
@@ -93,7 +94,7 @@ pub struct SearchResult {
 }
 
 /// Tag without internal metadata — suitable for list/search views
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TagSummary {
     pub category: String,
     pub value: String,

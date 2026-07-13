@@ -5,6 +5,7 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use utoipa::IntoParams;
 
 use crate::auth::AuthenticatedUser;
 use crate::cedar::enforcement::AppState;
@@ -20,7 +21,8 @@ fn default_limit() -> i64 {
 
 /// Query parameters for search
 /// Note: pagination fields inlined to work around serde_urlencoded#33 (flat breaks numeric deserialize)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct SearchParams {
     #[serde(default = "default_limit")]
     pub limit: i64,
@@ -62,6 +64,15 @@ fn parse_tag_filters(params: &SearchParams) -> Vec<(String, String)> {
 
 /// Search assets — returns compact SearchResult by default, full Asset when full_content=true
 /// Cedar filtering: assets the user cannot View are excluded from results.
+#[utoipa::path(
+    get,
+    path = "/api/search",
+    params(SearchParams),
+    responses(
+        (status = 200, description = "Search results (compact SearchResult by default, full Asset when full_content=true)"),
+    ),
+    tag = "search",
+)]
 pub async fn search(
     State(state): State<AppState>,
     user: AuthenticatedUser,

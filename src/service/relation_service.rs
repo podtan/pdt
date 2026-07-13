@@ -134,7 +134,7 @@ impl RelationService {
 }
 
 /// Node in the relationship graph
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
 pub struct GraphNode {
     pub asset_id: String,
     pub depth: u32,

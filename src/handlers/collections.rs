@@ -4,6 +4,7 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
+use utoipa::IntoParams;
 
 use crate::auth::AuthenticatedUser;
 use crate::error::Result;
@@ -13,7 +14,30 @@ use crate::models::{
 };
 use crate::service::{CollectionService, Services};
 
+/// Query parameters for collection list pagination
+#[derive(Debug, serde::Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ListCollectionsParams {
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+fn default_limit() -> i64 {
+    20
+}
+
 /// Create a new collection
+#[utoipa::path(
+    post,
+    path = "/api/collections",
+    request_body = CreateCollectionRequest,
+    responses(
+        (status = 200, description = "Collection created successfully", body = Collection),
+    ),
+    tag = "collections",
+)]
 pub async fn create_collection(
     State(services): State<Services>,
     user: AuthenticatedUser,
@@ -26,6 +50,18 @@ pub async fn create_collection(
 }
 
 /// Get collection by ID
+#[utoipa::path(
+    get,
+    path = "/api/collections/{id}",
+    params(
+        ("id" = String, Path, description = "Collection ID"),
+    ),
+    responses(
+        (status = 200, description = "Collection found", body = Collection),
+        (status = 404, description = "Collection not found"),
+    ),
+    tag = "collections",
+)]
 pub async fn get_collection(
     State(services): State<Services>,
     Path(id): Path<String>,
@@ -35,6 +71,19 @@ pub async fn get_collection(
 }
 
 /// Update a collection
+#[utoipa::path(
+    put,
+    path = "/api/collections/{id}",
+    params(
+        ("id" = String, Path, description = "Collection ID"),
+    ),
+    request_body = UpdateCollectionRequest,
+    responses(
+        (status = 200, description = "Collection updated successfully", body = Collection),
+        (status = 404, description = "Collection not found"),
+    ),
+    tag = "collections",
+)]
 pub async fn update_collection(
     State(services): State<Services>,
     user: AuthenticatedUser,
@@ -48,6 +97,18 @@ pub async fn update_collection(
 }
 
 /// Delete a collection
+#[utoipa::path(
+    delete,
+    path = "/api/collections/{id}",
+    params(
+        ("id" = String, Path, description = "Collection ID"),
+    ),
+    responses(
+        (status = 200, description = "Collection deleted successfully"),
+        (status = 404, description = "Collection not found"),
+    ),
+    tag = "collections",
+)]
 pub async fn delete_collection(
     State(services): State<Services>,
     user: AuthenticatedUser,
@@ -59,7 +120,16 @@ pub async fn delete_collection(
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
-/// List collections
+/// List collections with pagination
+#[utoipa::path(
+    get,
+    path = "/api/collections",
+    params(ListCollectionsParams),
+    responses(
+        (status = 200, description = "List of collections", body = PaginatedResponse<Collection>),
+    ),
+    tag = "collections",
+)]
 pub async fn list_collections(
     State(services): State<Services>,
     Query(params): Query<PaginationParams>,
@@ -75,6 +145,19 @@ pub async fn list_collections(
 }
 
 /// Add an asset to a collection
+#[utoipa::path(
+    post,
+    path = "/api/collections/{id}/assets",
+    params(
+        ("id" = String, Path, description = "Collection ID"),
+    ),
+    request_body = AddAssetRequest,
+    responses(
+        (status = 200, description = "Asset added to collection successfully"),
+        (status = 404, description = "Collection or asset not found"),
+    ),
+    tag = "collections",
+)]
 pub async fn add_asset(
     State(services): State<Services>,
     user: AuthenticatedUser,
@@ -88,6 +171,19 @@ pub async fn add_asset(
 }
 
 /// Remove an asset from a collection
+#[utoipa::path(
+    delete,
+    path = "/api/collections/{id}/assets/{asset_id}",
+    params(
+        ("id" = String, Path, description = "Collection ID"),
+        ("asset_id" = String, Path, description = "Asset ID to remove"),
+    ),
+    responses(
+        (status = 200, description = "Asset removed from collection successfully"),
+        (status = 404, description = "Collection or asset not found"),
+    ),
+    tag = "collections",
+)]
 pub async fn remove_asset(
     State(services): State<Services>,
     user: AuthenticatedUser,

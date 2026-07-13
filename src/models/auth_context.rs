@@ -9,12 +9,13 @@
 //! enforcement and default to open access (grandfathering).
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Authorization context embedded on an asset.
 ///
 /// Three fields that don't exist anywhere in Asset or Tags.
 /// This struct is 1:1 with the Asset document (MongoDB-idiomatic).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct AuthContext {
     /// Authorization visibility level: "public", "team", "private", "org"
     #[serde(default)]

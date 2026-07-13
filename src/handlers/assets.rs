@@ -6,6 +6,7 @@ use axum::{
 };
 use pep::oidc::types::JwtClaims;
 use serde::Deserialize;
+use utoipa::IntoParams;
 
 use crate::auth::AuthenticatedUser;
 use crate::cedar::enforcement::AppState;
@@ -30,7 +31,8 @@ fn default_order() -> String {
 
 /// Query parameters for listing assets
 /// Note: pagination fields inlined to work around serde_urlencoded#33 (flatten breaks numeric deserialize)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListAssetsParams {
     #[serde(default = "default_limit")]
     pub limit: i64,
@@ -47,6 +49,16 @@ pub struct ListAssetsParams {
 }
 
 /// Create a new asset
+#[utoipa::path(
+    post,
+    path = "/api/assets",
+    request_body = CreateAssetRequest,
+    responses(
+        (status = 200, description = "Asset created successfully", body = Asset),
+        (status = 400, description = "Validation error"),
+    ),
+    tag = "assets",
+)]
 pub async fn create_asset(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -59,6 +71,18 @@ pub async fn create_asset(
 }
 
 /// Get asset by ID
+#[utoipa::path(
+    get,
+    path = "/api/assets/{id}",
+    params(
+        ("id" = String, Path, description = "Asset ID"),
+    ),
+    responses(
+        (status = 200, description = "Asset found", body = Asset),
+        (status = 404, description = "Asset not found"),
+    ),
+    tag = "assets",
+)]
 pub async fn get_asset(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -78,6 +102,19 @@ pub async fn get_asset(
 }
 
 /// Update an asset
+#[utoipa::path(
+    put,
+    path = "/api/assets/{id}",
+    params(
+        ("id" = String, Path, description = "Asset ID"),
+    ),
+    request_body = UpdateAssetRequest,
+    responses(
+        (status = 200, description = "Asset updated successfully", body = Asset),
+        (status = 404, description = "Asset not found"),
+    ),
+    tag = "assets",
+)]
 pub async fn update_asset(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -99,7 +136,19 @@ pub async fn update_asset(
     Ok(Json(asset))
 }
 
-/// Delete an asset
+/// Delete an asset (soft delete)
+#[utoipa::path(
+    delete,
+    path = "/api/assets/{id}",
+    params(
+        ("id" = String, Path, description = "Asset ID"),
+    ),
+    responses(
+        (status = 200, description = "Asset deleted successfully"),
+        (status = 404, description = "Asset not found"),
+    ),
+    tag = "assets",
+)]
 pub async fn delete_asset(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -120,7 +169,16 @@ pub async fn delete_asset(
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
-/// List assets
+/// List assets with pagination
+#[utoipa::path(
+    get,
+    path = "/api/assets",
+    params(ListAssetsParams),
+    responses(
+        (status = 200, description = "List of assets", body = PaginatedResponse<Asset>),
+    ),
+    tag = "assets",
+)]
 pub async fn list_assets(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -152,6 +210,19 @@ pub async fn list_assets(
 }
 
 /// Add a tag to an asset
+#[utoipa::path(
+    post,
+    path = "/api/assets/{id}/tags",
+    params(
+        ("id" = String, Path, description = "Asset ID"),
+    ),
+    request_body = AddTagRequest,
+    responses(
+        (status = 200, description = "Tag added successfully", body = Tag),
+        (status = 404, description = "Asset not found"),
+    ),
+    tag = "assets",
+)]
 pub async fn add_tag(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -174,6 +245,19 @@ pub async fn add_tag(
 }
 
 /// Remove a tag from an asset
+#[utoipa::path(
+    delete,
+    path = "/api/assets/{id}/tags/{tag_id}",
+    params(
+        ("id" = String, Path, description = "Asset ID"),
+        ("tag_id" = String, Path, description = "Tag ID to remove"),
+    ),
+    responses(
+        (status = 200, description = "Tag removed successfully"),
+        (status = 404, description = "Asset or tag not found"),
+    ),
+    tag = "assets",
+)]
 pub async fn remove_tag(
     State(state): State<AppState>,
     user: AuthenticatedUser,
@@ -194,7 +278,20 @@ pub async fn remove_tag(
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
-/// Update the authorization context of an asset
+/// Update the authorization context of an asset (Cedar visibility/ownership management)
+#[utoipa::path(
+    put,
+    path = "/api/assets/{id}/auth-context",
+    params(
+        ("id" = String, Path, description = "Asset ID"),
+    ),
+    request_body = UpdateAuthContextRequest,
+    responses(
+        (status = 200, description = "Auth context updated successfully", body = Asset),
+        (status = 404, description = "Asset not found"),
+    ),
+    tag = "assets",
+)]
 pub async fn update_auth_context(
     State(state): State<AppState>,
     user: AuthenticatedUser,

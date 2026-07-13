@@ -1,0 +1,1812 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "Platform Data Toolkit (PDT) API",
+        "description": "PDT is a centralized API server that serves as an enterprise knowledge silo for company-specific concepts, documents, and their relationships.\n\n## Features\n\n- **Knowledge Asset Management**: Store and manage knowledge assets with rich metadata\n- **Tag-Based Classification**: Multi-dimensional tagging including asset type, business domain, language, etc.\n- **Graph-Based Relationships**: Define and traverse relationships between assets\n- **Concept Collections**: Organize assets into named collections\n- **Search & Discovery**: Full-text search and tag-based filtering\n- **Audit Logging**: Track all changes with user attribution\n- **Authorization Context**: Cedar-based visibility, owner groups, and confidentiality management",
+        "contact": {
+            "name": "PDT Team"
+        },
+        "license": {
+            "name": "MIT OR Apache-2.0"
+        },
+        "version": "1.0.0"
+    },
+    "servers": [
+        {
+            "url": "http://localhost:8080",
+            "description": "Local development server"
+        }
+    ],
+    "paths": {
+        "/api/assets": {
+            "get": {
+                "tags": [
+                    "assets"
+                ],
+                "summary": "List assets with pagination",
+                "operationId": "list_assets",
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int64"
+                        }
+                    },
+                    {
+                        "name": "cursor",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "asset_type",
+                        "in": "query",
+                        "description": "Filter by asset type tag value (e.g., \"document\", \"concept\", \"idea\")",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "sort_by",
+                        "in": "query",
+                        "description": "Sort field: \"created_at\" or \"updated_at\" (default: \"updated_at\")",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "order",
+                        "in": "query",
+                        "description": "Sort order: \"asc\" or \"desc\" (default: \"desc\")",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "List of assets",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedResponse_Asset"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "assets"
+                ],
+                "summary": "Create a new asset",
+                "operationId": "create_asset",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CreateAssetRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Asset created successfully",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Asset"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Validation error"
+                    }
+                }
+            }
+        },
+        "/api/assets/{id}": {
+            "get": {
+                "tags": [
+                    "assets"
+                ],
+                "summary": "Get asset by ID",
+                "operationId": "get_asset",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Asset ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Asset found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Asset"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Asset not found"
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "assets"
+                ],
+                "summary": "Update an asset",
+                "operationId": "update_asset",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Asset ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/UpdateAssetRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Asset updated successfully",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Asset"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Asset not found"
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "assets"
+                ],
+                "summary": "Delete an asset (soft delete)",
+                "operationId": "delete_asset",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Asset ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Asset deleted successfully"
+                    },
+                    "404": {
+                        "description": "Asset not found"
+                    }
+                }
+            }
+        },
+        "/api/assets/{id}/auth-context": {
+            "put": {
+                "tags": [
+                    "assets"
+                ],
+                "summary": "Update the authorization context of an asset (Cedar visibility/ownership management)",
+                "operationId": "update_auth_context",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Asset ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/UpdateAuthContextRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Auth context updated successfully",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Asset"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Asset not found"
+                    }
+                }
+            }
+        },
+        "/api/assets/{id}/graph": {
+            "get": {
+                "tags": [
+                    "relations"
+                ],
+                "summary": "Traverse the relationship graph from an asset",
+                "operationId": "traverse_graph",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Asset ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "depth",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int32",
+                            "minimum": 0
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Graph traversal results",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/GraphNode"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Asset not found"
+                    }
+                }
+            }
+        },
+        "/api/assets/{id}/history": {
+            "get": {
+                "tags": [
+                    "audit"
+                ],
+                "summary": "Get history for a specific asset",
+                "operationId": "get_asset_history",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Asset ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int64"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Asset change history",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/AuditEntry"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Asset not found"
+                    }
+                }
+            }
+        },
+        "/api/assets/{id}/relations": {
+            "get": {
+                "tags": [
+                    "relations"
+                ],
+                "summary": "Get all relations for an asset",
+                "operationId": "get_asset_relations",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Asset ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "List of relations",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/Relation"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Asset not found"
+                    }
+                }
+            }
+        },
+        "/api/assets/{id}/tags": {
+            "post": {
+                "tags": [
+                    "assets"
+                ],
+                "summary": "Add a tag to an asset",
+                "operationId": "add_tag",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Asset ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/AddTagRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Tag added successfully",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Tag"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Asset not found"
+                    }
+                }
+            }
+        },
+        "/api/assets/{id}/tags/{tag_id}": {
+            "delete": {
+                "tags": [
+                    "assets"
+                ],
+                "summary": "Remove a tag from an asset",
+                "operationId": "remove_tag",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Asset ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "tag_id",
+                        "in": "path",
+                        "description": "Tag ID to remove",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Tag removed successfully"
+                    },
+                    "404": {
+                        "description": "Asset or tag not found"
+                    }
+                }
+            }
+        },
+        "/api/audit": {
+            "get": {
+                "tags": [
+                    "audit"
+                ],
+                "summary": "List audit entries",
+                "operationId": "list_audit_entries",
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int64"
+                        }
+                    },
+                    {
+                        "name": "cursor",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "entity_type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "entity_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "user_id",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "List of audit entries",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedResponse_AuditEntry"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/collections": {
+            "get": {
+                "tags": [
+                    "collections"
+                ],
+                "summary": "List collections with pagination",
+                "operationId": "list_collections",
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int64"
+                        }
+                    },
+                    {
+                        "name": "cursor",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "List of collections",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PaginatedResponse_Collection"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "collections"
+                ],
+                "summary": "Create a new collection",
+                "operationId": "create_collection",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CreateCollectionRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Collection created successfully",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Collection"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/collections/{id}": {
+            "get": {
+                "tags": [
+                    "collections"
+                ],
+                "summary": "Get collection by ID",
+                "operationId": "get_collection",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Collection ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Collection found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Collection"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Collection not found"
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "collections"
+                ],
+                "summary": "Update a collection",
+                "operationId": "update_collection",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Collection ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/UpdateCollectionRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Collection updated successfully",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Collection"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Collection not found"
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "collections"
+                ],
+                "summary": "Delete a collection",
+                "operationId": "delete_collection",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Collection ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Collection deleted successfully"
+                    },
+                    "404": {
+                        "description": "Collection not found"
+                    }
+                }
+            }
+        },
+        "/api/collections/{id}/assets": {
+            "post": {
+                "tags": [
+                    "collections"
+                ],
+                "summary": "Add an asset to a collection",
+                "operationId": "add_asset",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Collection ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/AddAssetRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Asset added to collection successfully"
+                    },
+                    "404": {
+                        "description": "Collection or asset not found"
+                    }
+                }
+            }
+        },
+        "/api/collections/{id}/assets/{asset_id}": {
+            "delete": {
+                "tags": [
+                    "collections"
+                ],
+                "summary": "Remove an asset from a collection",
+                "operationId": "remove_asset",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Collection ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "asset_id",
+                        "in": "path",
+                        "description": "Asset ID to remove",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Asset removed from collection successfully"
+                    },
+                    "404": {
+                        "description": "Collection or asset not found"
+                    }
+                }
+            }
+        },
+        "/api/relations": {
+            "post": {
+                "tags": [
+                    "relations"
+                ],
+                "summary": "Create a new relation",
+                "operationId": "create_relation",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CreateRelationRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Relation created successfully",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Relation"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Source or target asset not found"
+                    }
+                }
+            }
+        },
+        "/api/relations/{id}": {
+            "get": {
+                "tags": [
+                    "relations"
+                ],
+                "summary": "Get relation by ID",
+                "operationId": "get_relation",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Relation ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Relation found",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/Relation"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Relation not found"
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "relations"
+                ],
+                "summary": "Delete a relation",
+                "operationId": "delete_relation",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Relation ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Relation deleted successfully"
+                    },
+                    "404": {
+                        "description": "Relation not found"
+                    }
+                }
+            }
+        },
+        "/api/search": {
+            "get": {
+                "tags": [
+                    "search"
+                ],
+                "summary": "Search assets \u2014 returns compact SearchResult by default, full Asset when full_content=true\nCedar filtering: assets the user cannot View are excluded from results.",
+                "operationId": "search",
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int64"
+                        }
+                    },
+                    {
+                        "name": "cursor",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "q",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "tag",
+                        "in": "query",
+                        "description": "Single tag filter (comma-separated for multiple: \"type:document,status:draft\")",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "tags",
+                        "in": "query",
+                        "description": "Multiple tag filters (repeated param: tag=type:doc&tag=status:draft)",
+                        "required": false,
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    {
+                        "name": "full_content",
+                        "in": "query",
+                        "description": "When true, return full Asset objects with complete content.\nDefault: false (returns compact SearchResult with snippet)",
+                        "required": false,
+                        "schema": {
+                            "type": "boolean"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Search results (compact SearchResult by default, full Asset when full_content=true)"
+                    }
+                }
+            }
+        },
+        "/health": {
+            "get": {
+                "tags": [
+                    "health"
+                ],
+                "summary": "Health check endpoint",
+                "operationId": "health_check",
+                "responses": {
+                    "200": {
+                        "description": "Service is healthy",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "AddAssetRequest": {
+                "type": "object",
+                "description": "Request to add an asset to a collection",
+                "required": [
+                    "asset_id"
+                ],
+                "properties": {
+                    "asset_id": {
+                        "type": "string"
+                    }
+                }
+            },
+            "AddTagRequest": {
+                "type": "object",
+                "description": "Request to add a tag to an asset",
+                "required": [
+                    "category",
+                    "value"
+                ],
+                "properties": {
+                    "category": {
+                        "type": "string"
+                    },
+                    "value": {
+                        "type": "string"
+                    }
+                }
+            },
+            "Asset": {
+                "type": "object",
+                "description": "Knowledge asset document",
+                "required": [
+                    "_id",
+                    "title",
+                    "created_at",
+                    "updated_at",
+                    "created_by",
+                    "updated_by"
+                ],
+                "properties": {
+                    "_id": {
+                        "type": "string"
+                    },
+                    "auth_context": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/AuthContext",
+                                "description": "Cedar authorization context \u2014 when present, Cedar policies are enforced.\nWhen absent (grandfathered assets), access is open."
+                            }
+                        ]
+                    },
+                    "content": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "created_by": {
+                        "type": "string"
+                    },
+                    "deleted_at": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "format": "date-time"
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "additionalProperties": {},
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Tag"
+                        }
+                    },
+                    "title": {
+                        "type": "string"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "updated_by": {
+                        "type": "string"
+                    }
+                }
+            },
+            "AuditAction": {
+                "type": "string",
+                "description": "Types of audited actions",
+                "enum": [
+                    "create",
+                    "update",
+                    "delete",
+                    "add_tag",
+                    "remove_tag",
+                    "add_relation",
+                    "remove_relation",
+                    "add_to_collection",
+                    "remove_from_collection"
+                ]
+            },
+            "AuditEntry": {
+                "type": "object",
+                "description": "Audit log entry",
+                "required": [
+                    "_id",
+                    "entity_type",
+                    "entity_id",
+                    "action",
+                    "changes",
+                    "user_id",
+                    "timestamp"
+                ],
+                "properties": {
+                    "_id": {
+                        "type": "string"
+                    },
+                    "action": {
+                        "$ref": "#/components/schemas/AuditAction"
+                    },
+                    "changes": {},
+                    "entity_id": {
+                        "type": "string"
+                    },
+                    "entity_type": {
+                        "type": "string"
+                    },
+                    "timestamp": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "user_id": {
+                        "type": "string"
+                    }
+                }
+            },
+            "AuthContext": {
+                "type": "object",
+                "description": "Authorization context embedded on an asset.\n\nThree fields that don't exist anywhere in Asset or Tags.\nThis struct is 1:1 with the Asset document (MongoDB-idiomatic).",
+                "properties": {
+                    "confidentiality": {
+                        "type": "string",
+                        "description": "Security classification level: \"internal\", \"confidential\", \"restricted\""
+                    },
+                    "owner_groups": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Groups that have implicit access beyond the visibility rules"
+                    },
+                    "visibility": {
+                        "type": "string",
+                        "description": "Authorization visibility level: \"public\", \"team\", \"private\", \"org\""
+                    }
+                }
+            },
+            "Collection": {
+                "type": "object",
+                "description": "Named collection of assets",
+                "required": [
+                    "_id",
+                    "name",
+                    "created_at",
+                    "updated_at",
+                    "created_by",
+                    "updated_by"
+                ],
+                "properties": {
+                    "_id": {
+                        "type": "string"
+                    },
+                    "asset_ids": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "created_by": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Tag"
+                        }
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "updated_by": {
+                        "type": "string"
+                    }
+                }
+            },
+            "CreateAssetRequest": {
+                "type": "object",
+                "description": "Request to create a new asset\nNote: Asset type should be specified via tags with category \"asset_type\"",
+                "required": [
+                    "title"
+                ],
+                "properties": {
+                    "auth_context": {
+                        "oneOf": [
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "$ref": "#/components/schemas/AuthContext",
+                                "description": "Optional auth_context to set at creation time (overrides defaults).\nIf omitted, defaults to public/internal/empty."
+                            }
+                        ]
+                    },
+                    "content": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "additionalProperties": {},
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/AddTagRequest"
+                        }
+                    },
+                    "title": {
+                        "type": "string"
+                    }
+                }
+            },
+            "CreateCollectionRequest": {
+                "type": "object",
+                "description": "Request to create a new collection",
+                "required": [
+                    "name"
+                ],
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/AddTagRequest"
+                        }
+                    }
+                }
+            },
+            "CreateRelationRequest": {
+                "type": "object",
+                "description": "Request to create a new relation",
+                "required": [
+                    "from_asset_id",
+                    "to_asset_id",
+                    "relation_type"
+                ],
+                "properties": {
+                    "from_asset_id": {
+                        "type": "string"
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "additionalProperties": {},
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "relation_type": {
+                        "$ref": "#/components/schemas/RelationType"
+                    },
+                    "to_asset_id": {
+                        "type": "string"
+                    }
+                }
+            },
+            "GraphNode": {
+                "type": "object",
+                "description": "Node in the relationship graph",
+                "required": [
+                    "asset_id",
+                    "depth",
+                    "relations"
+                ],
+                "properties": {
+                    "asset_id": {
+                        "type": "string"
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "format": "int32",
+                        "minimum": 0
+                    },
+                    "relations": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Relation"
+                        }
+                    }
+                }
+            },
+            "HealthResponse": {
+                "type": "object",
+                "description": "Health check response",
+                "required": [
+                    "status",
+                    "version"
+                ],
+                "properties": {
+                    "status": {
+                        "type": "string"
+                    },
+                    "version": {
+                        "type": "string"
+                    }
+                }
+            },
+            "PaginatedResponse_Asset": {
+                "type": "object",
+                "description": "Paginated response wrapper",
+                "required": [
+                    "data"
+                ],
+                "properties": {
+                    "data": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "description": "Knowledge asset document",
+                            "required": [
+                                "_id",
+                                "title",
+                                "created_at",
+                                "updated_at",
+                                "created_by",
+                                "updated_by"
+                            ],
+                            "properties": {
+                                "_id": {
+                                    "type": "string"
+                                },
+                                "auth_context": {
+                                    "oneOf": [
+                                        {
+                                            "type": "null"
+                                        },
+                                        {
+                                            "$ref": "#/components/schemas/AuthContext",
+                                            "description": "Cedar authorization context \u2014 when present, Cedar policies are enforced.\nWhen absent (grandfathered assets), access is open."
+                                        }
+                                    ]
+                                },
+                                "content": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ]
+                                },
+                                "created_at": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                },
+                                "created_by": {
+                                    "type": "string"
+                                },
+                                "deleted_at": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ],
+                                    "format": "date-time"
+                                },
+                                "metadata": {
+                                    "type": "object",
+                                    "additionalProperties": {},
+                                    "propertyNames": {
+                                        "type": "string"
+                                    }
+                                },
+                                "tags": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/Tag"
+                                    }
+                                },
+                                "title": {
+                                    "type": "string"
+                                },
+                                "updated_at": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                },
+                                "updated_by": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "next_cursor": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "total": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "minimum": 0
+                    }
+                }
+            },
+            "PaginatedResponse_AuditEntry": {
+                "type": "object",
+                "description": "Paginated response wrapper",
+                "required": [
+                    "data"
+                ],
+                "properties": {
+                    "data": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "description": "Audit log entry",
+                            "required": [
+                                "_id",
+                                "entity_type",
+                                "entity_id",
+                                "action",
+                                "changes",
+                                "user_id",
+                                "timestamp"
+                            ],
+                            "properties": {
+                                "_id": {
+                                    "type": "string"
+                                },
+                                "action": {
+                                    "$ref": "#/components/schemas/AuditAction"
+                                },
+                                "changes": {},
+                                "entity_id": {
+                                    "type": "string"
+                                },
+                                "entity_type": {
+                                    "type": "string"
+                                },
+                                "timestamp": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                },
+                                "user_id": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "next_cursor": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "total": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "minimum": 0
+                    }
+                }
+            },
+            "PaginatedResponse_Collection": {
+                "type": "object",
+                "description": "Paginated response wrapper",
+                "required": [
+                    "data"
+                ],
+                "properties": {
+                    "data": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "description": "Named collection of assets",
+                            "required": [
+                                "_id",
+                                "name",
+                                "created_at",
+                                "updated_at",
+                                "created_by",
+                                "updated_by"
+                            ],
+                            "properties": {
+                                "_id": {
+                                    "type": "string"
+                                },
+                                "asset_ids": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "created_at": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                },
+                                "created_by": {
+                                    "type": "string"
+                                },
+                                "description": {
+                                    "type": [
+                                        "string",
+                                        "null"
+                                    ]
+                                },
+                                "name": {
+                                    "type": "string"
+                                },
+                                "tags": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/Tag"
+                                    }
+                                },
+                                "updated_at": {
+                                    "type": "string",
+                                    "format": "date-time"
+                                },
+                                "updated_by": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "next_cursor": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "total": {
+                        "type": [
+                            "integer",
+                            "null"
+                        ],
+                        "format": "int64",
+                        "minimum": 0
+                    }
+                }
+            },
+            "Relation": {
+                "type": "object",
+                "description": "Relationship between two assets",
+                "required": [
+                    "_id",
+                    "from_asset_id",
+                    "to_asset_id",
+                    "relation_type",
+                    "created_at",
+                    "created_by"
+                ],
+                "properties": {
+                    "_id": {
+                        "type": "string"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "created_by": {
+                        "type": "string"
+                    },
+                    "from_asset_id": {
+                        "type": "string"
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "additionalProperties": {},
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "relation_type": {
+                        "$ref": "#/components/schemas/RelationType"
+                    },
+                    "to_asset_id": {
+                        "type": "string"
+                    }
+                }
+            },
+            "RelationType": {
+                "type": "string",
+                "description": "Types of relationships between assets",
+                "enum": [
+                    "contains",
+                    "references",
+                    "related_to",
+                    "depends_on",
+                    "supersedes",
+                    "complements"
+                ]
+            },
+            "SearchResult": {
+                "type": "object",
+                "description": "Compact search result \u2014 returned by /api/search by default",
+                "required": [
+                    "_id",
+                    "title",
+                    "tags",
+                    "updated_at"
+                ],
+                "properties": {
+                    "_id": {
+                        "type": "string"
+                    },
+                    "snippet": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Auto-generated snippet (first 200 chars, markdown-stripped)"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/TagSummary"
+                        },
+                        "description": "Compact tags without noise fields (id, added_by, added_at)"
+                    },
+                    "title": {
+                        "type": "string"
+                    },
+                    "updated_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                }
+            },
+            "Tag": {
+                "type": "object",
+                "description": "Tag attached to an asset\n\nUses industry-standard key-value format:\n- `category`: Free-form string (e.g., \"type\", \"status\", \"domain\", \"priority\")\n- `value`: The tag value (e.g., \"document\", \"draft\", \"backend\", \"high\")\n\nCommon categories (suggestions, not enforced):\n- `type` - Asset type (document, idea, requirement, bug, task)\n- `status` - Status (draft, review, approved, archived)\n- `domain` - Business domain (backend, frontend, infra)\n- `lang` - Language (en, fa)\n- `priority` - Priority (high, medium, low)\n- `scope` - Feature/component scope",
+                "required": [
+                    "id",
+                    "category",
+                    "value",
+                    "added_by",
+                    "added_at"
+                ],
+                "properties": {
+                    "added_at": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "added_by": {
+                        "type": "string"
+                    },
+                    "category": {
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "value": {
+                        "type": "string"
+                    }
+                }
+            },
+            "TagSummary": {
+                "type": "object",
+                "description": "Tag without internal metadata \u2014 suitable for list/search views",
+                "required": [
+                    "category",
+                    "value"
+                ],
+                "properties": {
+                    "category": {
+                        "type": "string"
+                    },
+                    "value": {
+                        "type": "string"
+                    }
+                }
+            },
+            "UpdateAssetRequest": {
+                "type": "object",
+                "description": "Request to update an existing asset",
+                "properties": {
+                    "content": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "metadata": {
+                        "type": [
+                            "object",
+                            "null"
+                        ],
+                        "additionalProperties": {},
+                        "propertyNames": {
+                            "type": "string"
+                        }
+                    },
+                    "title": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "UpdateAuthContextRequest": {
+                "type": "object",
+                "description": "Request to update the authorization context of an asset",
+                "properties": {
+                    "confidentiality": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "owner_groups": {
+                        "type": [
+                            "array",
+                            "null"
+                        ],
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "visibility": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            },
+            "UpdateCollectionRequest": {
+                "type": "object",
+                "description": "Request to update a collection",
+                "properties": {
+                    "description": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
+            }
+        }
+    },
+    "tags": [
+        {
+            "name": "health",
+            "description": "Health check endpoints"
+        },
+        {
+            "name": "assets",
+            "description": "Knowledge asset management"
+        },
+        {
+            "name": "relations",
+            "description": "Asset relationship management"
+        },
+        {
+            "name": "collections",
+            "description": "Asset collection management"
+        },
+        {
+            "name": "search",
+            "description": "Full-text search and discovery"
+        },
+        {
+            "name": "audit",
+            "description": "Audit logging and history"
+        }
+    ]
+}
