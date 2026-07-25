@@ -1,11 +1,17 @@
 //! Repository layer for database operations
+//!
+//! This module defines trait abstractions for all repositories and provides
+//! concrete implementations for different database backends.
 
-mod asset_repository;
-mod audit_repository;
-mod collection_repository;
-mod relation_repository;
+pub mod traits;
 
-pub use asset_repository::AssetRepository;
-pub use audit_repository::AuditRepository;
-pub use collection_repository::CollectionRepository;
-pub use relation_repository::RelationRepository;
+mod mongo_asset_repository;
+mod mongo_audit_repository;
+mod mongo_collection_repository;
+mod mongo_relation_repository;
+
+pub use traits::{AssetRepository, AuditRepository, CollectionRepository, RelationRepository};
+pub use mongo_asset_repository::MongoAssetRepository;
+pub use mongo_audit_repository::MongoAuditRepository;
+pub use mongo_collection_repository::MongoCollectionRepository;
+pub use mongo_relation_repository::MongoRelationRepository;

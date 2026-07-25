@@ -162,13 +162,13 @@ pub fn evaluate_permission(
 /// Used by relation handlers that need to verify permission on related assets
 /// but don't already have the full asset loaded.
 pub async fn check_asset_permission_by_id(
-    db: &crate::db::Database,
+    services: &Services,
     authorizer: &CedarAuthorizer,
     claims: &JwtClaims,
     action: &str,
     asset_id: &str,
 ) -> Result<(), ApiError> {
-    let asset = crate::repository::AssetRepository::get_by_id(db, asset_id).await?;
+    let asset = services.assets().get_by_id(asset_id).await?;
     if let Some(authz) = check_permission(authorizer, claims, action, &asset).err() {
         return Err(authz);
     }
@@ -179,15 +179,15 @@ pub async fn check_asset_permission_by_id(
 ///
 /// Both the source and target assets must be readable by the user.
 pub async fn check_relation_permission(
-    db: &crate::db::Database,
+    services: &Services,
     authorizer: &CedarAuthorizer,
     claims: &JwtClaims,
     action: &str,
     from_asset_id: &str,
     to_asset_id: &str,
 ) -> Result<(), ApiError> {
-    check_asset_permission_by_id(db, authorizer, claims, "View", from_asset_id).await?;
-    check_asset_permission_by_id(db, authorizer, claims, action, to_asset_id).await?;
+    check_asset_permission_by_id(services, authorizer, claims, "View", from_asset_id).await?;
+    check_asset_permission_by_id(services, authorizer, claims, action, to_asset_id).await?;
     Ok(())
 }
 

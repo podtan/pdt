@@ -2,15 +2,12 @@
 
 use serde_json::json;
 
-use crate::db::Database;
 use crate::error::{ApiError, Result};
 use crate::models::{
     AddTagRequest, Asset, AuditAction, CreateAssetRequest, Tag,
     UpdateAssetRequest, UpdateAuthContextRequest,
 };
-use crate::repository::{
-    AssetRepository, AuditRepository, CollectionRepository, RelationRepository,
-};
+use crate::service::Services;
 
 /// Service for asset business logic
 pub struct AssetService;
@@ -18,7 +15,7 @@ pub struct AssetService;
 impl AssetService {
     /// Create a new asset with validation and default auth_context
     pub async fn create(
-        db: &Database,
+        services: &Services,
         request: CreateAssetRequest,
         user_id: &str,
     ) -> Result<Asset> {
@@ -28,11 +25,10 @@ impl AssetService {
         }
 
         // Create asset (repository auto-populates default auth_context)
-        let asset = AssetRepository::create(db, request.clone(), user_id).await?;
+        let asset = services.assets().create(request.clone(), user_id).await?;
 
         // Create audit entry
-        AuditRepository::create(
-            db,
+        services.audit().create(
             "asset",
             &asset.id,
             AuditAction::Create,
@@ -48,13 +44,13 @@ impl AssetService {
     }
 
     /// Get asset by ID
-    pub async fn get(db: &Database, id: &str) -> Result<Asset> {
-        AssetRepository::get_by_id(db, id).await
+    pub async fn get(services: &Services, id: &str) -> Result<Asset> {
+        services.assets().get_by_id(id).await
     }
 
     /// Update an asset
     pub async fn update(
-        db: &Database,
+        services: &Services,
         id: &str,
         request: UpdateAssetRequest,
         user_id: &str,
@@ -67,14 +63,13 @@ impl AssetService {
         }
 
         // Get current state for audit
-        let old_asset = AssetRepository::get_by_id(db, id).await?;
+        let old_asset = services.assets().get_by_id(id).await?;
 
         // Update asset
-        let asset = AssetRepository::update(db, id, request.clone(), user_id).await?;
+        let asset = services.assets().update(id, request.clone(), user_id).await?;
 
         // Create audit entry
-        AuditRepository::create(
-            db,
+        services.audit().create(
             "asset",
             id,
             AuditAction::Update,
@@ -96,21 +91,21 @@ impl AssetService {
     }
 
     /// Delete an asset (soft delete)
-    pub async fn delete(db: &Database, id: &str, user_id: &str) -> Result<()> {
+    pub async fn delete(services: &Services, id: &str, user_id: &str) -> Result<()> {
         // Verify asset exists
-        AssetRepository::get_by_id(db, id).await?;
+        services.assets().get_by_id(id).await?;
 
         // Delete asset
-        AssetRepository::soft_delete(db, id).await?;
+        services.assets().soft_delete(id).await?;
 
         // Delete related relations
-        RelationRepository::delete_by_asset(db, id).await?;
+        services.relations().delete_by_asset(id).await?;
 
         // Remove from collections
-        CollectionRepository::remove_asset_from_all(db, id).await?;
+        services.collections().remove_asset_from_all(id).await?;
 
         // Create audit entry
-        AuditRepository::create(db, "asset", id, AuditAction::Delete, json!({}), user_id).await?;
+        services.audit().create("asset", id, AuditAction::Delete, json!({}), user_id).await?;
 
         Ok(())
     }
@@ -118,19 +113,19 @@ impl AssetService {
     /// List assets with pagination
     /// Filter by asset type tag if specified
     pub async fn list(
-        db: &Database,
+        services: &Services,
         limit: i64,
         cursor: Option<&str>,
         asset_type_tag: Option<&str>,
         sort_by: &str,
         order: &str,
     ) -> Result<(Vec<Asset>, Option<String>)> {
-        AssetRepository::list(db, limit, cursor, asset_type_tag, sort_by, order).await
+        services.assets().list(limit, cursor, asset_type_tag, sort_by, order).await
     }
 
     /// Add a tag to an asset
     pub async fn add_tag(
-        db: &Database,
+        services: &Services,
         asset_id: &str,
         request: AddTagRequest,
         user_id: &str,
@@ -138,18 +133,17 @@ impl AssetService {
         // Validate the tag request
         request.validate().map_err(ApiError::Validation)?;
 
-        let tag = AssetRepository::add_tag(db, asset_id, request.clone(), user_id).await?;
+        let tag = services.assets().add_tag(asset_id, request.clone(), user_id).await?;
 
         // Create audit entry
-        AuditRepository::create(
-            db,
+        services.audit().create(
             "asset",
             asset_id,
             AuditAction::AddTag,
             json!({
                 "tag_id": tag.id,
                 "category": &tag.category,
-                "value": tag.value,
+                "value": &tag.value,
             }),
             user_id,
         )
@@ -160,16 +154,15 @@ impl AssetService {
 
     /// Remove a tag from an asset
     pub async fn remove_tag(
-        db: &Database,
+        services: &Services,
         asset_id: &str,
         tag_id: &str,
         user_id: &str,
     ) -> Result<()> {
-        AssetRepository::remove_tag(db, asset_id, tag_id).await?;
+        services.assets().remove_tag(asset_id, tag_id).await?;
 
         // Create audit entry
-        AuditRepository::create(
-            db,
+        services.audit().create(
             "asset",
             asset_id,
             AuditAction::RemoveTag,
@@ -183,13 +176,13 @@ impl AssetService {
 
     /// Update the authorization context of an asset
     pub async fn update_auth_context(
-        db: &Database,
+        services: &Services,
         id: &str,
         request: UpdateAuthContextRequest,
         user_id: &str,
     ) -> Result<Asset> {
         // Get current asset
-        let asset = AssetRepository::get_by_id(db, id).await?;
+        let asset = services.assets().get_by_id(id).await?;
 
         // Merge request fields into existing auth_context (or create default)
         let mut ctx = asset.auth_context.unwrap_or_default();
@@ -203,14 +196,14 @@ impl AssetService {
             ctx.confidentiality = confidentiality.clone();
         }
 
-        let updated = AssetRepository::update_auth_context(db, id, &ctx).await?;
+        let updated = services.assets().update_auth_context(id, &ctx).await?;
 
         // Cascade to descendants via relation graph if requested
         let cascaded_count = if request.cascade {
-            let descendants = RelationRepository::get_descendants(db, id).await?;
+            let descendants = services.relations().get_descendants(id).await?;
             let count = descendants.len();
             for child_id in &descendants {
-                if let Ok(child) = AssetRepository::get_by_id(db, child_id).await {
+                if let Ok(child) = services.assets().get_by_id(child_id).await {
                     // Merge: only update fields that were explicitly set in the request,
                     // preserving child-specific overrides for unset fields
                     let mut child_ctx = child.auth_context.unwrap_or_default();
@@ -223,7 +216,7 @@ impl AssetService {
                     if request.confidentiality.is_some() {
                         child_ctx.confidentiality = ctx.confidentiality.clone();
                     }
-                    let _ = AssetRepository::update_auth_context(db, child_id, &child_ctx).await;
+                    let _ = services.assets().update_auth_context(child_id, &child_ctx).await;
                 }
             }
             count
@@ -232,8 +225,7 @@ impl AssetService {
         };
 
         // Audit
-        AuditRepository::create(
-            db,
+        services.audit().create(
             "asset",
             id,
             AuditAction::Update,

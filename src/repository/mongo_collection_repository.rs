@@ -1,4 +1,4 @@
-//! Collection repository
+//! MongoDB implementation of CollectionRepository
 
 use bson::doc;
 use chrono::Utc;
@@ -8,14 +8,23 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::error::{ApiError, Result};
 use crate::models::{Collection, CreateCollectionRequest, Tag, UpdateCollectionRequest};
+use crate::repository::traits::CollectionRepository;
 
-/// Repository for collection operations
-pub struct CollectionRepository;
+/// MongoDB-backed collection repository
+pub struct MongoCollectionRepository {
+    db: Database,
+}
 
-impl CollectionRepository {
-    /// Create a new collection
-    pub async fn create(
-        db: &Database,
+impl MongoCollectionRepository {
+    pub fn new(db: Database) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait::async_trait]
+impl CollectionRepository for MongoCollectionRepository {
+    async fn create(
+        &self,
         request: CreateCollectionRequest,
         user_id: &str,
     ) -> Result<Collection> {
@@ -46,24 +55,23 @@ impl CollectionRepository {
             updated_by: user_id.to_string(),
         };
 
-        db.collections().insert_one(&collection).await?;
+        self.db.collections().insert_one(&collection).await?;
 
         Ok(collection)
     }
 
-    /// Get collection by ID
-    pub async fn get_by_id(db: &Database, id: &str) -> Result<Collection> {
+    async fn get_by_id(&self, id: &str) -> Result<Collection> {
         let filter = doc! { "_id": id };
 
-        db.collections()
+        self.db
+            .collections()
             .find_one(filter)
             .await?
             .ok_or_else(|| ApiError::NotFound(format!("Collection not found: {}", id)))
     }
 
-    /// Update a collection
-    pub async fn update(
-        db: &Database,
+    async fn update(
+        &self,
         id: &str,
         request: UpdateCollectionRequest,
         user_id: &str,
@@ -90,19 +98,18 @@ impl CollectionRepository {
         }
 
         let filter = doc! { "_id": id };
-        let result = db.collections().update_one(filter, update_doc).await?;
+        let result = self.db.collections().update_one(filter, update_doc).await?;
 
         if result.matched_count == 0 {
             return Err(ApiError::NotFound(format!("Collection not found: {}", id)));
         }
 
-        Self::get_by_id(db, id).await
+        self.get_by_id(id).await
     }
 
-    /// Delete a collection
-    pub async fn delete(db: &Database, id: &str) -> Result<()> {
+    async fn delete(&self, id: &str) -> Result<()> {
         let filter = doc! { "_id": id };
-        let result = db.collections().delete_one(filter).await?;
+        let result = self.db.collections().delete_one(filter).await?;
 
         if result.deleted_count == 0 {
             return Err(ApiError::NotFound(format!("Collection not found: {}", id)));
@@ -111,9 +118,8 @@ impl CollectionRepository {
         Ok(())
     }
 
-    /// List collections with pagination
-    pub async fn list(
-        db: &Database,
+    async fn list(
+        &self,
         limit: i64,
         cursor: Option<&str>,
     ) -> Result<(Vec<Collection>, Option<String>)> {
@@ -128,7 +134,7 @@ impl CollectionRepository {
             .limit(limit + 1)
             .build();
 
-        let mut cursor = db.collections().find(filter).with_options(options).await?;
+        let mut cursor = self.db.collections().find(filter).with_options(options).await?;
         let mut collections = Vec::new();
 
         while let Some(collection) = cursor.try_next().await? {
@@ -145,15 +151,14 @@ impl CollectionRepository {
         Ok((collections, next_cursor))
     }
 
-    /// Add an asset to a collection
-    pub async fn add_asset(db: &Database, collection_id: &str, asset_id: &str) -> Result<()> {
+    async fn add_asset(&self, collection_id: &str, asset_id: &str) -> Result<()> {
         let filter = doc! { "_id": collection_id };
         let update = doc! {
             "$addToSet": { "asset_ids": asset_id },
             "$set": { "updated_at": Utc::now() }
         };
 
-        let result = db.collections().update_one(filter, update).await?;
+        let result = self.db.collections().update_one(filter, update).await?;
 
         if result.matched_count == 0 {
             return Err(ApiError::NotFound(format!(
@@ -165,15 +170,14 @@ impl CollectionRepository {
         Ok(())
     }
 
-    /// Remove an asset from a collection
-    pub async fn remove_asset(db: &Database, collection_id: &str, asset_id: &str) -> Result<()> {
+    async fn remove_asset(&self, collection_id: &str, asset_id: &str) -> Result<()> {
         let filter = doc! { "_id": collection_id };
         let update = doc! {
             "$pull": { "asset_ids": asset_id },
             "$set": { "updated_at": Utc::now() }
         };
 
-        let result = db.collections().update_one(filter, update).await?;
+        let result = self.db.collections().update_one(filter, update).await?;
 
         if result.matched_count == 0 {
             return Err(ApiError::NotFound(format!(
@@ -185,15 +189,14 @@ impl CollectionRepository {
         Ok(())
     }
 
-    /// Remove an asset from all collections
-    pub async fn remove_asset_from_all(db: &Database, asset_id: &str) -> Result<()> {
+    async fn remove_asset_from_all(&self, asset_id: &str) -> Result<()> {
         let filter = doc! { "asset_ids": asset_id };
         let update = doc! {
             "$pull": { "asset_ids": asset_id },
             "$set": { "updated_at": Utc::now() }
         };
 
-        db.collections().update_many(filter, update).await?;
+        self.db.collections().update_many(filter, update).await?;
 
         Ok(())
     }

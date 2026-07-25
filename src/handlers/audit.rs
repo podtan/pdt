@@ -9,7 +9,7 @@ use utoipa::IntoParams;
 
 use crate::error::Result;
 use crate::models::{AuditEntry, PaginatedResponse};
-use crate::service::{AuditService, Services};
+use crate::service::AuditService;
 
 fn default_limit() -> i64 {
     20
@@ -52,11 +52,11 @@ fn default_history_limit() -> i64 {
     tag = "audit",
 )]
 pub async fn list_audit_entries(
-    State(services): State<Services>,
+    State(services): State<crate::cedar::enforcement::AppState>,
     Query(params): Query<AuditListParams>,
 ) -> Result<Json<PaginatedResponse<AuditEntry>>> {
     let (entries, next_cursor) = AuditService::list(
-        services.db(),
+        services.services(),
         params.entity_type.as_deref(),
         params.entity_id.as_deref(),
         params.user_id.as_deref(),
@@ -87,10 +87,10 @@ pub async fn list_audit_entries(
     tag = "audit",
 )]
 pub async fn get_asset_history(
-    State(services): State<Services>,
+    State(services): State<crate::cedar::enforcement::AppState>,
     Path(id): Path<String>,
     Query(params): Query<HistoryParams>,
 ) -> Result<Json<Vec<AuditEntry>>> {
-    let entries = AuditService::get_asset_history(services.db(), &id, params.limit).await?;
+    let entries = AuditService::get_asset_history(services.services(), &id, params.limit).await?;
     Ok(Json(entries))
 }

@@ -13,6 +13,7 @@ use tower_http::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use pdt::{auth::middleware::AuthLayer, config::Config, db::Database, handlers, openapi::ApiDoc, service::Services};
+use pdt::repository::{MongoAssetRepository, MongoAuditRepository, MongoCollectionRepository, MongoRelationRepository};
 use std::sync::Arc;
 use pep::oidc_resource_server::ResourceServerClient;
 use utoipa::OpenApi;
@@ -36,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     tracing::info!("Configuration loaded");
 
-    // Connect to database
+    // Connect to database (MongoDB/DocumentDB)
     let db = Database::connect(&config.database).await?;
     tracing::info!("Connected to database: {}", config.database.database);
 
@@ -44,8 +45,19 @@ async fn main() -> anyhow::Result<()> {
     db.create_indices().await?;
     tracing::info!("Database indices created");
 
+    // Initialize MongoDB-backed repositories
+    let asset_repo = MongoAssetRepository::new(db.clone());
+    let relation_repo = MongoRelationRepository::new(db.clone());
+    let collection_repo = MongoCollectionRepository::new(db.clone());
+    let audit_repo = MongoAuditRepository::new(db);
+
     // Initialize services
-    let services = Services::new(db);
+    let services = Services::from_repositories(
+        asset_repo,
+        relation_repo,
+        collection_repo,
+        audit_repo,
+    );
 
     // Initialize Cedar authorization (optional — gracefully disabled when CEDAR_ENABLED=false)
     let authorizer = if config.cedar.enabled {

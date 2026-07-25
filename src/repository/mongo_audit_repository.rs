@@ -1,4 +1,4 @@
-//! Audit repository
+//! MongoDB implementation of AuditRepository
 
 use bson::doc;
 use chrono::Utc;
@@ -8,14 +8,23 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::error::Result;
 use crate::models::{AuditAction, AuditEntry};
+use crate::repository::traits::AuditRepository;
 
-/// Repository for audit operations
-pub struct AuditRepository;
+/// MongoDB-backed audit repository
+pub struct MongoAuditRepository {
+    db: Database,
+}
 
-impl AuditRepository {
-    /// Create a new audit entry
-    pub async fn create(
-        db: &Database,
+impl MongoAuditRepository {
+    pub fn new(db: Database) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait::async_trait]
+impl AuditRepository for MongoAuditRepository {
+    async fn create(
+        &self,
         entity_type: &str,
         entity_id: &str,
         action: AuditAction,
@@ -32,14 +41,13 @@ impl AuditRepository {
             timestamp: Utc::now(),
         };
 
-        db.audit().insert_one(&entry).await?;
+        self.db.audit().insert_one(&entry).await?;
 
         Ok(entry)
     }
 
-    /// List audit entries with filters
-    pub async fn list(
-        db: &Database,
+    async fn list(
+        &self,
         entity_type: Option<&str>,
         entity_id: Option<&str>,
         user_id: Option<&str>,
@@ -69,7 +77,7 @@ impl AuditRepository {
             .limit(limit + 1)
             .build();
 
-        let mut cursor = db.audit().find(filter).with_options(options).await?;
+        let mut cursor = self.db.audit().find(filter).with_options(options).await?;
         let mut entries = Vec::new();
 
         while let Some(entry) = cursor.try_next().await? {
@@ -86,9 +94,8 @@ impl AuditRepository {
         Ok((entries, next_cursor))
     }
 
-    /// Get history for a specific entity
-    pub async fn get_entity_history(
-        db: &Database,
+    async fn get_entity_history(
+        &self,
         entity_type: &str,
         entity_id: &str,
         limit: i64,
@@ -103,7 +110,7 @@ impl AuditRepository {
             .limit(limit)
             .build();
 
-        let mut cursor = db.audit().find(filter).with_options(options).await?;
+        let mut cursor = self.db.audit().find(filter).with_options(options).await?;
         let mut entries = Vec::new();
 
         while let Some(entry) = cursor.try_next().await? {

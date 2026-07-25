@@ -1,4 +1,4 @@
-//! Asset repository
+//! MongoDB implementation of AssetRepository
 
 use bson::doc;
 use chrono::Utc;
@@ -8,17 +8,22 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::error::{ApiError, Result};
 use crate::models::{AddTagRequest, Asset, AuthContext, CreateAssetRequest, Tag, UpdateAssetRequest};
+use crate::repository::traits::AssetRepository;
 
-/// Repository for asset operations
-pub struct AssetRepository;
+/// MongoDB-backed asset repository
+pub struct MongoAssetRepository {
+    db: Database,
+}
 
-impl AssetRepository {
-    /// Create a new asset
-    pub async fn create(
-        db: &Database,
-        request: CreateAssetRequest,
-        user_id: &str,
-    ) -> Result<Asset> {
+impl MongoAssetRepository {
+    pub fn new(db: Database) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait::async_trait]
+impl AssetRepository for MongoAssetRepository {
+    async fn create(&self, request: CreateAssetRequest, user_id: &str) -> Result<Asset> {
         let now = Utc::now();
         let id = Uuid::new_v4().to_string();
 
@@ -48,27 +53,26 @@ impl AssetRepository {
             auth_context: request.auth_context.or_else(|| Some(AuthContext::default())),
         };
 
-        db.assets().insert_one(&asset).await?;
+        self.db.assets().insert_one(&asset).await?;
 
         Ok(asset)
     }
 
-    /// Get asset by ID
-    pub async fn get_by_id(db: &Database, id: &str) -> Result<Asset> {
+    async fn get_by_id(&self, id: &str) -> Result<Asset> {
         let filter = doc! {
             "_id": id,
             "deleted_at": { "$exists": false }
         };
 
-        db.assets()
+        self.db
+            .assets()
             .find_one(filter)
             .await?
             .ok_or_else(|| ApiError::NotFound(format!("Asset not found: {}", id)))
     }
 
-    /// Update an asset
-    pub async fn update(
-        db: &Database,
+    async fn update(
+        &self,
         id: &str,
         request: UpdateAssetRequest,
         user_id: &str,
@@ -107,13 +111,12 @@ impl AssetRepository {
             "deleted_at": { "$exists": false }
         };
 
-        db.assets().update_one(filter, update_doc).await?;
+        self.db.assets().update_one(filter, update_doc).await?;
 
-        Self::get_by_id(db, id).await
+        self.get_by_id(id).await
     }
 
-    /// Soft delete an asset
-    pub async fn soft_delete(db: &Database, id: &str) -> Result<()> {
+    async fn soft_delete(&self, id: &str) -> Result<()> {
         let filter = doc! {
             "_id": id,
             "deleted_at": { "$exists": false }
@@ -125,7 +128,7 @@ impl AssetRepository {
             }
         };
 
-        let result = db.assets().update_one(filter, update).await?;
+        let result = self.db.assets().update_one(filter, update).await?;
 
         if result.matched_count == 0 {
             return Err(ApiError::NotFound(format!("Asset not found: {}", id)));
@@ -134,14 +137,8 @@ impl AssetRepository {
         Ok(())
     }
 
-    /// List assets with pagination and sorting
-    /// Optionally filter by asset type tag value
-    ///
-    /// Cursor format: when sorting by a date field, the cursor is
-    /// `<ISO8601_datetime>|<_id>` to correctly paginate across
-    /// non-unique sort fields. For `_id` sorting, the cursor is just the `_id`.
-    pub async fn list(
-        db: &Database,
+    async fn list(
+        &self,
         limit: i64,
         cursor: Option<&str>,
         asset_type_tag: Option<&str>,
@@ -175,16 +172,12 @@ impl AssetRepository {
         };
 
         // Parse cursor and apply proper seek-based pagination.
-        // The cursor encodes `<sort_field_value>|<_id>` so we can
-        // seek past the last seen item even when the sort field is not unique.
         if let Some(c) = cursor {
             if let Some((date_str, id)) = c.split_once('|') {
-                // Compound cursor: seek past (sort_field, _id)
                 use chrono::DateTime;
                 if let Ok(dt) = date_str.parse::<DateTime<Utc>>() {
                     let bson_dt = mongodb::bson::DateTime::from_millis(dt.timestamp_millis());
                     let comparator = if sort_order == -1 { "$lt" } else { "$gt" };
-                    // Items that have a strictly "further" sort value, OR same sort value but further _id
                     filter.insert(
                         "$or",
                         bson::bson!([
@@ -193,12 +186,10 @@ impl AssetRepository {
                         ]),
                     );
                 } else {
-                    // Fallback: treat entire cursor as _id (legacy format)
                     let comparator = if sort_order == -1 { "$lt" } else { "$gt" };
                     filter.insert("_id", doc! { comparator: c });
                 }
             } else {
-                // Simple _id cursor (legacy format)
                 let comparator = if sort_order == -1 { "$lt" } else { "$gt" };
                 filter.insert("_id", doc! { comparator: c });
             }
@@ -209,7 +200,7 @@ impl AssetRepository {
             .limit(limit + 1)
             .build();
 
-        let mut cursor = db.assets().find(filter).with_options(options).await?;
+        let mut cursor = self.db.assets().find(filter).with_options(options).await?;
         let mut assets = Vec::new();
 
         while let Some(asset) = cursor.try_next().await? {
@@ -218,7 +209,6 @@ impl AssetRepository {
 
         let next_cursor = if assets.len() > limit as usize {
             assets.pop();
-            // Encode cursor as `<sort_field_value>|<_id>`
             assets.last().map(|a| {
                 let date_val = match sort_field {
                     "created_at" => a.created_at.to_rfc3339(),
@@ -233,55 +223,8 @@ impl AssetRepository {
         Ok((assets, next_cursor))
     }
 
-    /// Add a tag to an asset
-    pub async fn add_tag(
-        db: &Database,
-        asset_id: &str,
-        request: AddTagRequest,
-        user_id: &str,
-    ) -> Result<Tag> {
-        // Verify asset exists
-        Self::get_by_id(db, asset_id).await?;
-
-        let tag = Tag {
-            id: Uuid::new_v4().to_string(),
-            category: request.category,
-            value: request.value,
-            added_by: user_id.to_string(),
-            added_at: Utc::now(),
-        };
-
-        let filter = doc! { "_id": asset_id };
-        let update = doc! {
-            "$push": { "tags": bson::to_bson(&tag)? },
-            "$set": { "updated_at": Utc::now() }
-        };
-
-        db.assets().update_one(filter, update).await?;
-
-        Ok(tag)
-    }
-
-    /// Remove a tag from an asset
-    pub async fn remove_tag(db: &Database, asset_id: &str, tag_id: &str) -> Result<()> {
-        let filter = doc! { "_id": asset_id };
-        let update = doc! {
-            "$pull": { "tags": { "id": tag_id } },
-            "$set": { "updated_at": Utc::now() }
-        };
-
-        let result = db.assets().update_one(filter, update).await?;
-
-        if result.matched_count == 0 {
-            return Err(ApiError::NotFound(format!("Asset not found: {}", asset_id)));
-        }
-
-        Ok(())
-    }
-
-    /// Search assets by text and tags
-    pub async fn search(
-        db: &Database,
+    async fn search(
+        &self,
         query: Option<&str>,
         tag_filters: Vec<(String, String)>,
         limit: i64,
@@ -291,10 +234,6 @@ impl AssetRepository {
 
         if let Some(q) = query {
             if !q.is_empty() {
-                // Improve search precision:
-                // 1. If it's multiple words and not quoted, try to make it an AND search
-                //    by prefixing each word with '+'.
-                // 2. If it's already quoted, leave it as a phrase search.
                 let search_query = if q.contains(' ') && !q.starts_with('"') {
                     q.split_whitespace()
                         .map(|w| {
@@ -330,7 +269,6 @@ impl AssetRepository {
 
         if let Some(c) = cursor {
             if let Some((date_str, id)) = c.split_once('|') {
-                // Compound cursor: seek past (updated_at, _id)
                 use chrono::DateTime;
                 if let Ok(dt) = date_str.parse::<DateTime<Utc>>() {
                     let bson_dt = mongodb::bson::DateTime::from_millis(dt.timestamp_millis());
@@ -342,30 +280,26 @@ impl AssetRepository {
                         ]),
                     );
                 } else {
-                    // Fallback: treat entire cursor as _id
                     filter.insert("_id", doc! { "$lt": c });
                 }
             } else {
-                // Simple _id cursor (legacy format)
                 filter.insert("_id", doc! { "$lt": c });
             }
         }
 
         let options = if query.is_some() {
-            // Sort by relevance (text score) when a search query is provided
             mongodb::options::FindOptions::builder()
                 .sort(doc! { "score": { "$meta": "textScore" } })
                 .limit(limit + 1)
                 .build()
         } else {
-            // Otherwise sort by updated_at descending for most recent first
             mongodb::options::FindOptions::builder()
                 .sort(doc! { "updated_at": -1 })
                 .limit(limit + 1)
                 .build()
         };
 
-        let mut cursor = db.assets().find(filter).with_options(options).await?;
+        let mut cursor = self.db.assets().find(filter).with_options(options).await?;
         let mut assets = Vec::new();
 
         while let Some(asset) = cursor.try_next().await? {
@@ -374,7 +308,6 @@ impl AssetRepository {
 
         let next_cursor = if assets.len() > limit as usize {
             assets.pop();
-            // Encode cursor as `<updated_at>|<_id>` for consistent pagination
             assets.last().map(|a| format!("{}|{}", a.updated_at.to_rfc3339(), a.id))
         } else {
             None
@@ -383,16 +316,58 @@ impl AssetRepository {
         Ok((assets, next_cursor))
     }
 
-    /// Check if asset exists (including deleted)
-    pub async fn exists(db: &Database, id: &str) -> Result<bool> {
+    async fn add_tag(
+        &self,
+        asset_id: &str,
+        request: AddTagRequest,
+        user_id: &str,
+    ) -> Result<Tag> {
+        // Verify asset exists
+        self.get_by_id(asset_id).await?;
+
+        let tag = Tag {
+            id: Uuid::new_v4().to_string(),
+            category: request.category,
+            value: request.value,
+            added_by: user_id.to_string(),
+            added_at: Utc::now(),
+        };
+
+        let filter = doc! { "_id": asset_id };
+        let update = doc! {
+            "$push": { "tags": bson::to_bson(&tag)? },
+            "$set": { "updated_at": Utc::now() }
+        };
+
+        self.db.assets().update_one(filter, update).await?;
+
+        Ok(tag)
+    }
+
+    async fn remove_tag(&self, asset_id: &str, tag_id: &str) -> Result<()> {
+        let filter = doc! { "_id": asset_id };
+        let update = doc! {
+            "$pull": { "tags": { "id": tag_id } },
+            "$set": { "updated_at": Utc::now() }
+        };
+
+        let result = self.db.assets().update_one(filter, update).await?;
+
+        if result.matched_count == 0 {
+            return Err(ApiError::NotFound(format!("Asset not found: {}", asset_id)));
+        }
+
+        Ok(())
+    }
+
+    async fn exists(&self, id: &str) -> Result<bool> {
         let filter = doc! { "_id": id };
-        let count = db.assets().count_documents(filter).await?;
+        let count = self.db.assets().count_documents(filter).await?;
         Ok(count > 0)
     }
 
-    /// Update the auth_context of an asset
-    pub async fn update_auth_context(
-        db: &Database,
+    async fn update_auth_context(
+        &self,
         id: &str,
         auth_context: &AuthContext,
     ) -> Result<Asset> {
@@ -408,11 +383,11 @@ impl AssetRepository {
             }
         };
 
-        let result = db.assets().update_one(filter, update).await?;
+        let result = self.db.assets().update_one(filter, update).await?;
         if result.matched_count == 0 {
             return Err(ApiError::NotFound(format!("Asset not found: {}", id)));
         }
 
-        Self::get_by_id(db, id).await
+        self.get_by_id(id).await
     }
 }

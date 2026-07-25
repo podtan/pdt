@@ -2,10 +2,9 @@
 
 use serde_json::json;
 
-use crate::db::Database;
 use crate::error::{ApiError, Result};
 use crate::models::{AuditAction, CreateRelationRequest, Relation};
-use crate::repository::{AssetRepository, AuditRepository, RelationRepository};
+use crate::service::Services;
 
 /// Service for relation business logic
 pub struct RelationService;
@@ -13,12 +12,12 @@ pub struct RelationService;
 impl RelationService {
     /// Create a new relation with validation
     pub async fn create(
-        db: &Database,
+        services: &Services,
         request: CreateRelationRequest,
         user_id: &str,
     ) -> Result<Relation> {
         // Validate source asset exists
-        if !AssetRepository::exists(db, &request.from_asset_id).await? {
+        if !services.assets().exists(&request.from_asset_id).await? {
             return Err(ApiError::NotFound(format!(
                 "Source asset not found: {}",
                 request.from_asset_id
@@ -26,7 +25,7 @@ impl RelationService {
         }
 
         // Validate target asset exists
-        if !AssetRepository::exists(db, &request.to_asset_id).await? {
+        if !services.assets().exists(&request.to_asset_id).await? {
             return Err(ApiError::NotFound(format!(
                 "Target asset not found: {}",
                 request.to_asset_id
@@ -41,7 +40,9 @@ impl RelationService {
         }
 
         // Check for cycles (for directional relation types)
-        if RelationRepository::would_create_cycle(db, &request.from_asset_id, &request.to_asset_id)
+        if services
+            .relations()
+            .would_create_cycle(&request.from_asset_id, &request.to_asset_id)
             .await?
         {
             return Err(ApiError::Validation(
@@ -50,11 +51,10 @@ impl RelationService {
         }
 
         // Create relation
-        let relation = RelationRepository::create(db, request.clone(), user_id).await?;
+        let relation = services.relations().create(request.clone(), user_id).await?;
 
         // Create audit entry
-        AuditRepository::create(
-            db,
+        services.audit().create(
             "relation",
             &relation.id,
             AuditAction::Create,
@@ -71,21 +71,20 @@ impl RelationService {
     }
 
     /// Get relation by ID
-    pub async fn get(db: &Database, id: &str) -> Result<Relation> {
-        RelationRepository::get_by_id(db, id).await
+    pub async fn get(services: &Services, id: &str) -> Result<Relation> {
+        services.relations().get_by_id(id).await
     }
 
     /// Delete a relation
-    pub async fn delete(db: &Database, id: &str, user_id: &str) -> Result<()> {
+    pub async fn delete(services: &Services, id: &str, user_id: &str) -> Result<()> {
         // Get relation for audit
-        let relation = RelationRepository::get_by_id(db, id).await?;
+        let relation = services.relations().get_by_id(id).await?;
 
         // Delete relation
-        RelationRepository::delete(db, id).await?;
+        services.relations().delete(id).await?;
 
         // Create audit entry
-        AuditRepository::create(
-            db,
+        services.audit().create(
             "relation",
             id,
             AuditAction::RemoveRelation,
@@ -102,23 +101,23 @@ impl RelationService {
     }
 
     /// Get all relations for an asset
-    pub async fn get_asset_relations(db: &Database, asset_id: &str) -> Result<Vec<Relation>> {
+    pub async fn get_asset_relations(services: &Services, asset_id: &str) -> Result<Vec<Relation>> {
         // Verify asset exists
-        AssetRepository::get_by_id(db, asset_id).await?;
+        services.assets().get_by_id(asset_id).await?;
 
-        RelationRepository::get_asset_relations(db, asset_id).await
+        services.relations().get_asset_relations(asset_id).await
     }
 
     /// Traverse the relationship graph
     pub async fn traverse_graph(
-        db: &Database,
+        services: &Services,
         asset_id: &str,
         max_depth: u32,
     ) -> Result<Vec<GraphNode>> {
         // Verify asset exists
-        AssetRepository::get_by_id(db, asset_id).await?;
+        services.assets().get_by_id(asset_id).await?;
 
-        let traversal = RelationRepository::traverse_graph(db, asset_id, max_depth).await?;
+        let traversal = services.relations().traverse_graph(asset_id, max_depth).await?;
 
         let nodes = traversal
             .into_iter()
