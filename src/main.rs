@@ -13,7 +13,11 @@ use tower_http::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use pdt::{auth::middleware::AuthLayer, config::Config, db::Database, handlers, openapi::ApiDoc, service::Services};
-use pdt::repository::{MongoAssetRepository, MongoAuditRepository, MongoCollectionRepository, MongoRelationRepository};
+use pdt::repository::{
+    MongoAssetRepository, MongoAuditRepository, MongoCollectionRepository,
+    MongoRelationRepository,
+};
+use pdt::config::DatabaseBackend;
 use std::sync::Arc;
 use pep::oidc_resource_server::ResourceServerClient;
 use utoipa::OpenApi;
@@ -35,29 +39,72 @@ async fn main() -> anyhow::Result<()> {
 
     // Load configuration
     let config = Config::from_env()?;
-    tracing::info!("Configuration loaded");
+    tracing::info!("Configuration loaded (backend: {:?})", config.database_backend);
 
-    // Connect to database (MongoDB/DocumentDB)
-    let db = Database::connect(&config.database).await?;
-    tracing::info!("Connected to database: {}", config.database.database);
+    // Initialize services based on configured backend
+    let services = match config.database_backend {
+        DatabaseBackend::Mongodb => {
+            // Connect to MongoDB/DocumentDB
+            let db = Database::connect(&config.database).await?;
+            tracing::info!("Connected to MongoDB: {}", config.database.database);
+            db.create_indices().await?;
+            tracing::info!("Database indices created");
 
-    // Create indices
-    db.create_indices().await?;
-    tracing::info!("Database indices created");
+            let asset_repo = MongoAssetRepository::new(db.clone());
+            let relation_repo = MongoRelationRepository::new(db.clone());
+            let collection_repo = MongoCollectionRepository::new(db.clone());
+            let audit_repo = MongoAuditRepository::new(db);
 
-    // Initialize MongoDB-backed repositories
-    let asset_repo = MongoAssetRepository::new(db.clone());
-    let relation_repo = MongoRelationRepository::new(db.clone());
-    let collection_repo = MongoCollectionRepository::new(db.clone());
-    let audit_repo = MongoAuditRepository::new(db);
+            Services::from_repositories(
+                asset_repo,
+                relation_repo,
+                collection_repo,
+                audit_repo,
+            )
+        }
+        #[cfg(feature = "sqlite-backend")]
+        DatabaseBackend::Sqlite => {
+            use pdt::repository::{
+                SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
+                SqliteRelationRepository,
+            };
 
-    // Initialize services
-    let services = Services::from_repositories(
-        asset_repo,
-        relation_repo,
-        collection_repo,
-        audit_repo,
-    );
+            let db_path = &config.sqlite_path;
+            tracing::info!("Connecting to SQLite: {}", db_path);
+
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(5)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(db_path)
+                        .create_if_missing(true)
+                        .foreign_keys(true)
+                        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal),
+                )
+                .await
+                .context("Failed to connect to SQLite")?;
+
+            // Run migrations
+            let migration_sql = include_str!("../migrations/sqlite/001_initial.sql");
+            sqlx::raw_sql(migration_sql)
+                .execute(&pool)
+                .await
+                .context("Failed to run SQLite migrations")?;
+            tracing::info!("SQLite migrations applied");
+
+            let asset_repo = SqliteAssetRepository::new(pool.clone());
+            let relation_repo = SqliteRelationRepository::new(pool.clone());
+            let collection_repo = SqliteCollectionRepository::new(pool.clone());
+            let audit_repo = SqliteAuditRepository::new(pool);
+
+            Services::from_repositories(
+                asset_repo,
+                relation_repo,
+                collection_repo,
+                audit_repo,
+            )
+        }
+    };
 
     // Initialize Cedar authorization (optional — gracefully disabled when CEDAR_ENABLED=false)
     let authorizer = if config.cedar.enabled {

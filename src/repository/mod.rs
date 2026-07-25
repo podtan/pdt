@@ -15,3 +15,21 @@ pub use mongo_asset_repository::MongoAssetRepository;
 pub use mongo_audit_repository::MongoAuditRepository;
 pub use mongo_collection_repository::MongoCollectionRepository;
 pub use mongo_relation_repository::MongoRelationRepository;
+
+#[cfg(feature = "sqlite-backend")]
+mod sqlite_asset_repository;
+#[cfg(feature = "sqlite-backend")]
+mod sqlite_audit_repository;
+#[cfg(feature = "sqlite-backend")]
+mod sqlite_collection_repository;
+#[cfg(feature = "sqlite-backend")]
+mod sqlite_relation_repository;
+
+#[cfg(feature = "sqlite-backend")]
+pub use sqlite_asset_repository::SqliteAssetRepository;
+#[cfg(feature = "sqlite-backend")]
+pub use sqlite_audit_repository::SqliteAuditRepository;
+#[cfg(feature = "sqlite-backend")]
+pub use sqlite_collection_repository::SqliteCollectionRepository;
+#[cfg(feature = "sqlite-backend")]
+pub use sqlite_relation_repository::SqliteRelationRepository;
