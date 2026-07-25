@@ -378,7 +378,7 @@ impl AssetRepository for SqliteAssetRepository {
         if let Some(q) = query {
             if !q.is_empty() {
                 query_str.push_str(
-                    " AND a.id IN (SELECT assets_fts.rowid FROM assets_fts WHERE assets_fts MATCH ?)",
+                    " AND a.rowid IN (SELECT assets_fts.rowid FROM assets_fts WHERE assets_fts MATCH ?)",
                 );
             }
         }
