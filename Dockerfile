@@ -11,7 +11,6 @@ WORKDIR /app
 
 COPY target/release/pdt ./
 COPY config-sample.toml ./config.toml
-COPY policies/ ./policies/
 
 ENV PDT_HOST=0.0.0.0
 ENV PDT_PORT=8080

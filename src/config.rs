@@ -46,6 +46,11 @@ pub struct CedarConfig {
     pub schema_path: String,
     pub validate_on_load: bool,
     pub default_decision: String,
+    /// Optional URL of a remote policy store endpoint.
+    /// When set, policies are fetched from this URL at startup.
+    pub policy_store_url: Option<String>,
+    /// Optional Bearer token for the policy store endpoint.
+    pub policy_store_token: Option<String>,
 }
 
 impl Default for CedarConfig {
@@ -65,11 +70,13 @@ impl Default for CedarConfig {
                 .unwrap_or(true),
             default_decision: env::var("CEDAR_DEFAULT_DECISION")
                 .unwrap_or_else(|_| "deny".to_string()),
+            policy_store_url: env::var("CEDAR_POLICY_STORE_URL").ok(),
+            policy_store_token: env::var("CEDAR_POLICY_STORE_TOKEN").ok(),
         }
     }
 }
 
-/// Convert PDT's CedarConfig to PEP's CedarConfig
+/// Convert PDT's CedarConfig to PEP's CedarConfig, injecting embedded policies.
 impl From<CedarConfig> for pep::cedar::CedarConfig {
     fn from(config: CedarConfig) -> Self {
         use std::path::PathBuf;
@@ -82,6 +89,10 @@ impl From<CedarConfig> for pep::cedar::CedarConfig {
                 _ => pep::cedar::config::DefaultDecision::Deny,
             },
             validate_on_load: config.validate_on_load,
+            policy_store_url: config.policy_store_url,
+            policy_store_token: config.policy_store_token,
+            embedded_policy: Some(include_str!("../policies/rbac.cedar")),
+            embedded_schema: Some(include_str!("../policies/schema.cedarschema")),
         }
     }
 }
