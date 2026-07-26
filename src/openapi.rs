@@ -48,6 +48,8 @@ use utoipa::OpenApi;
         // Audit routes
         crate::handlers::audit::list_audit_entries,
         crate::handlers::audit::get_asset_history,
+        // Cedar policy store
+        crate::handlers::cedar::get_cedar_policies,
     ),
     components(schemas(
         crate::handlers::health::HealthResponse,
@@ -70,6 +72,7 @@ use utoipa::OpenApi;
         crate::models::AuditEntry,
         crate::models::AuditAction,
         crate::service::relation_service::GraphNode,
+        crate::handlers::cedar::CedarPolicyResponse,
     )),
     tags(
         (name = "health", description = "Health check endpoints"),
@@ -78,6 +81,7 @@ use utoipa::OpenApi;
         (name = "collections", description = "Asset collection management"),
         (name = "search", description = "Full-text search and discovery"),
         (name = "audit", description = "Audit logging and history"),
+        (name = "cedar", description = "Cedar policy store"),
     ),
 )]
 pub struct ApiDoc;

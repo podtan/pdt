@@ -49,9 +49,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize Cedar authorization (optional — gracefully disabled when CEDAR_ENABLED=false)
     let authorizer = if config.cedar.enabled {
-        match pep::cedar::CedarAuthorizer::new(config.cedar.clone().into()) {
+        let cedar_config: pep::cedar::CedarConfig = config.cedar.clone().into();
+        match pep::cedar::CedarAuthorizer::new_with_policy_store(cedar_config).await {
             Ok(authorizer) => {
-                tracing::info!("Cedar authorizer initialized (policy_path: {:?})", config.cedar.policy_path);
+                tracing::info!("Cedar authorizer initialized (embedded policies loaded)");
                 Some(authorizer)
             }
             Err(e) => {
@@ -72,7 +73,9 @@ async fn main() -> anyhow::Result<()> {
     // Build router
     // Public routes (no auth)
     let public_routes = Router::new()
-        .route("/health", get(handlers::health::health_check));
+        .route("/health", get(handlers::health::health_check))
+        // Cedar policy store endpoint — public so other services can fetch policies
+        .route("/api/cedar/policies", get(handlers::cedar::get_cedar_policies));
 
     // Protected routes (auth + Cedar)
     let protected_routes = Router::new()
