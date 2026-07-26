@@ -92,6 +92,16 @@ async fn main() -> anyhow::Result<()> {
                 .context("Failed to run SQLite migrations")?;
             tracing::info!("SQLite migrations applied");
 
+            // Rebuild FTS index for any pre-existing data (e.g. from migration script)
+            sqlx::raw_sql(
+                "INSERT INTO assets_fts(assets_fts) VALUES('rebuild');"
+            )
+            .execute(&pool)
+            .await
+            .map_err(|e| tracing::warn!("FTS rebuild skipped (non-fatal): {}", e))
+            .ok();
+            tracing::info!("FTS index rebuilt");
+
             let asset_repo = SqliteAssetRepository::new(pool.clone());
             let relation_repo = SqliteRelationRepository::new(pool.clone());
             let collection_repo = SqliteCollectionRepository::new(pool.clone());
