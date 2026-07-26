@@ -42,6 +42,13 @@ pub enum ApiError {
     #[error("JSON serialization error: {0}")]
     JsonSer(#[from] serde_json::Error),
 
+    #[error("Database error: {0}")]
+    GenericDatabase(String),
+
+    #[cfg(feature = "sqlite-backend")]
+    #[error("SQLx error: {0}")]
+    Sqlx(#[from] sqlx::Error),
+
     #[error("Validation error: {0}")]
     Validation(String),
 }
@@ -99,6 +106,23 @@ impl IntoResponse for ApiError {
                 )
             }
             ApiError::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
+            ApiError::GenericDatabase(msg) => {
+                tracing::error!("Database error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DATABASE_ERROR",
+                    "A database error occurred".to_string(),
+                )
+            }
+            #[cfg(feature = "sqlite-backend")]
+            ApiError::Sqlx(e) => {
+                tracing::error!("SQLx error: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DATABASE_ERROR",
+                    "A database error occurred".to_string(),
+                )
+            }
             ApiError::JsonSer(e) => {
                 tracing::error!("JSON serialization error: {}", e);
                 (

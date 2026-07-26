@@ -66,7 +66,7 @@ pub async fn create_asset(
 ) -> Result<Json<Asset>> {
     let user_id = &user.user_id;
 
-    let asset = AssetService::create(state.services().db(), request, user_id).await?;
+    let asset = AssetService::create(state.services(), request, user_id).await?;
     Ok(Json(asset))
 }
 
@@ -88,7 +88,7 @@ pub async fn get_asset(
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<Json<Asset>> {
-    let asset = AssetService::get(state.services().db(), &id).await?;
+    let asset = AssetService::get(state.services(), &id).await?;
 
     // Cedar enforcement: skip if no authorizer or asset has no auth_context
     if let Some(authorizer) = state.authorizer() {
@@ -125,14 +125,14 @@ pub async fn update_asset(
 
     // Cedar enforcement on the current state of the asset
     if let Some(authorizer) = state.authorizer() {
-        let asset = AssetService::get(state.services().db(), &id).await?;
+        let asset = AssetService::get(state.services(), &id).await?;
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
             crate::cedar::enforcement::check_permission(authorizer, &claims, "Edit", &asset)?;
         }
     }
 
-    let asset = AssetService::update(state.services().db(), &id, request, user_id).await?;
+    let asset = AssetService::update(state.services(), &id, request, user_id).await?;
     Ok(Json(asset))
 }
 
@@ -158,14 +158,14 @@ pub async fn delete_asset(
 
     // Cedar enforcement
     if let Some(authorizer) = state.authorizer() {
-        let asset = AssetService::get(state.services().db(), &id).await?;
+        let asset = AssetService::get(state.services(), &id).await?;
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
             crate::cedar::enforcement::check_permission(authorizer, &claims, "Delete", &asset)?;
         }
     }
 
-    AssetService::delete(state.services().db(), &id, user_id).await?;
+    AssetService::delete(state.services(), &id, user_id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
@@ -185,7 +185,7 @@ pub async fn list_assets(
     Query(params): Query<ListAssetsParams>,
 ) -> Result<Json<PaginatedResponse<Asset>>> {
     let (assets, next_cursor) = AssetService::list(
-        state.services().db(),
+        state.services(),
         params.limit,
         params.cursor.as_deref(),
         params.asset_type.as_deref(),
@@ -233,14 +233,14 @@ pub async fn add_tag(
 
     // Cedar enforcement for Tag action
     if let Some(authorizer) = state.authorizer() {
-        let asset = AssetService::get(state.services().db(), &id).await?;
+        let asset = AssetService::get(state.services(), &id).await?;
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
             crate::cedar::enforcement::check_permission(authorizer, &claims, "Tag", &asset)?;
         }
     }
 
-    let tag = AssetService::add_tag(state.services().db(), &id, request, user_id).await?;
+    let tag = AssetService::add_tag(state.services(), &id, request, user_id).await?;
     Ok(Json(tag))
 }
 
@@ -267,14 +267,14 @@ pub async fn remove_tag(
 
     // Cedar enforcement for Tag action
     if let Some(authorizer) = state.authorizer() {
-        let asset = AssetService::get(state.services().db(), &id).await?;
+        let asset = AssetService::get(state.services(), &id).await?;
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
             crate::cedar::enforcement::check_permission(authorizer, &claims, "Tag", &asset)?;
         }
     }
 
-    AssetService::remove_tag(state.services().db(), &id, &tag_id, user_id).await?;
+    AssetService::remove_tag(state.services(), &id, &tag_id, user_id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
@@ -300,7 +300,7 @@ pub async fn update_auth_context(
 ) -> Result<Json<Asset>> {
     let user_id = &user.user_id;
 
-    let asset = AssetService::update_auth_context(state.services().db(), &id, request, user_id).await?;
+    let asset = AssetService::update_auth_context(state.services(), &id, request, user_id).await?;
     Ok(Json(asset))
 }
 

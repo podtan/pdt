@@ -1,4 +1,4 @@
-//! Relation repository
+//! MongoDB implementation of RelationRepository
 
 use bson::doc;
 use chrono::Utc;
@@ -9,14 +9,23 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::error::{ApiError, Result};
 use crate::models::{CreateRelationRequest, Relation};
+use crate::repository::traits::RelationRepository;
 
-/// Repository for relation operations
-pub struct RelationRepository;
+/// MongoDB-backed relation repository
+pub struct MongoRelationRepository {
+    db: Database,
+}
 
-impl RelationRepository {
-    /// Create a new relation
-    pub async fn create(
-        db: &Database,
+impl MongoRelationRepository {
+    pub fn new(db: Database) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait::async_trait]
+impl RelationRepository for MongoRelationRepository {
+    async fn create(
+        &self,
         request: CreateRelationRequest,
         user_id: &str,
     ) -> Result<Relation> {
@@ -33,25 +42,24 @@ impl RelationRepository {
             created_by: user_id.to_string(),
         };
 
-        db.relations().insert_one(&relation).await?;
+        self.db.relations().insert_one(&relation).await?;
 
         Ok(relation)
     }
 
-    /// Get relation by ID
-    pub async fn get_by_id(db: &Database, id: &str) -> Result<Relation> {
+    async fn get_by_id(&self, id: &str) -> Result<Relation> {
         let filter = doc! { "_id": id };
 
-        db.relations()
+        self.db
+            .relations()
             .find_one(filter)
             .await?
             .ok_or_else(|| ApiError::NotFound(format!("Relation not found: {}", id)))
     }
 
-    /// Delete a relation
-    pub async fn delete(db: &Database, id: &str) -> Result<()> {
+    async fn delete(&self, id: &str) -> Result<()> {
         let filter = doc! { "_id": id };
-        let result = db.relations().delete_one(filter).await?;
+        let result = self.db.relations().delete_one(filter).await?;
 
         if result.deleted_count == 0 {
             return Err(ApiError::NotFound(format!("Relation not found: {}", id)));
@@ -60,8 +68,7 @@ impl RelationRepository {
         Ok(())
     }
 
-    /// Get all relations for an asset (both directions)
-    pub async fn get_asset_relations(db: &Database, asset_id: &str) -> Result<Vec<Relation>> {
+    async fn get_asset_relations(&self, asset_id: &str) -> Result<Vec<Relation>> {
         let filter = doc! {
             "$or": [
                 { "from_asset_id": asset_id },
@@ -69,7 +76,7 @@ impl RelationRepository {
             ]
         };
 
-        let mut cursor = db.relations().find(filter).await?;
+        let mut cursor = self.db.relations().find(filter).await?;
         let mut relations = Vec::new();
 
         while let Some(relation) = cursor.try_next().await? {
@@ -79,8 +86,7 @@ impl RelationRepository {
         Ok(relations)
     }
 
-    /// Delete all relations involving an asset
-    pub async fn delete_by_asset(db: &Database, asset_id: &str) -> Result<u64> {
+    async fn delete_by_asset(&self, asset_id: &str) -> Result<u64> {
         let filter = doc! {
             "$or": [
                 { "from_asset_id": asset_id },
@@ -88,14 +94,12 @@ impl RelationRepository {
             ]
         };
 
-        let result = db.relations().delete_many(filter).await?;
+        let result = self.db.relations().delete_many(filter).await?;
         Ok(result.deleted_count)
     }
 
-    /// Traverse the relationship graph from an asset
-    /// Returns all connected assets up to the specified depth
-    pub async fn traverse_graph(
-        db: &Database,
+    async fn traverse_graph(
+        &self,
         start_asset_id: &str,
         max_depth: u32,
     ) -> Result<Vec<(String, u32, Vec<Relation>)>> {
@@ -111,7 +115,7 @@ impl RelationRepository {
                 continue;
             }
 
-            let relations = Self::get_asset_relations(db, &current_id).await?;
+            let relations = self.get_asset_relations(&current_id).await?;
 
             if !relations.is_empty() || current_id == start_asset_id {
                 results.push((current_id.clone(), depth, relations.clone()));
@@ -136,12 +140,7 @@ impl RelationRepository {
         Ok(results)
     }
 
-    /// Get all descendant asset IDs reachable from a root via outgoing relations.
-    ///
-    /// Performs BFS traversal following all outgoing relations (from_asset_id == current).
-    /// Returns asset IDs in BFS order, excluding the root itself.
-    /// Used for cascading auth_context updates to child assets.
-    pub async fn get_descendants(db: &Database, root_id: &str) -> Result<Vec<String>> {
+    async fn get_descendants(&self, root_id: &str) -> Result<Vec<String>> {
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<String> = VecDeque::new();
         let mut results: Vec<String> = Vec::new();
@@ -150,7 +149,7 @@ impl RelationRepository {
         visited.insert(root_id.to_string());
 
         while let Some(current_id) = queue.pop_front() {
-            let relations = Self::get_asset_relations(db, &current_id).await?;
+            let relations = self.get_asset_relations(&current_id).await?;
             for relation in relations {
                 if relation.from_asset_id == current_id && !visited.contains(&relation.to_asset_id) {
                     visited.insert(relation.to_asset_id.clone());
@@ -163,8 +162,7 @@ impl RelationRepository {
         Ok(results)
     }
 
-    /// Check for cycles that would be created by adding a relation
-    pub async fn would_create_cycle(db: &Database, from_id: &str, to_id: &str) -> Result<bool> {
+    async fn would_create_cycle(&self, from_id: &str, to_id: &str) -> Result<bool> {
         // Check if there's already a path from to_id to from_id
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<String> = VecDeque::new();
@@ -178,7 +176,7 @@ impl RelationRepository {
             }
 
             let filter = doc! { "from_asset_id": &current_id };
-            let mut cursor = db.relations().find(filter).await?;
+            let mut cursor = self.db.relations().find(filter).await?;
 
             while let Some(relation) = cursor.try_next().await? {
                 if !visited.contains(&relation.to_asset_id) {

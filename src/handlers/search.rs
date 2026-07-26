@@ -82,7 +82,7 @@ pub async fn search(
     let tag_filters = parse_tag_filters(&params);
 
     let (assets, next_cursor) = SearchService::search(
-        state.services().db(),
+        state.services(),
         params.q.as_deref(),
         tag_filters,
         params.limit,

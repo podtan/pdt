@@ -55,7 +55,7 @@ pub async fn create_relation(
     if let Some(ref authorizer) = state.authorizer() {
         let claims = extract_claims(&user);
         crate::cedar::enforcement::check_relation_permission(
-            state.services().db(),
+            state.services(),
             authorizer,
             &claims,
             "Relate",
@@ -65,7 +65,7 @@ pub async fn create_relation(
         .await?;
     }
 
-    let relation = RelationService::create(state.services().db(), request, user_id).await?;
+    let relation = RelationService::create(state.services(), request, user_id).await?;
     Ok(Json(relation))
 }
 
@@ -86,7 +86,7 @@ pub async fn get_relation(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Relation>> {
-    let relation = RelationService::get(state.services().db(), &id).await?;
+    let relation = RelationService::get(state.services(), &id).await?;
     Ok(Json(relation))
 }
 
@@ -112,10 +112,10 @@ pub async fn delete_relation(
 
     // Cedar enforcement: check permission on the relation's source asset
     if let Some(ref authorizer) = state.authorizer() {
-        let relation = RelationService::get(state.services().db(), &id).await?;
+        let relation = RelationService::get(state.services(), &id).await?;
         let claims = extract_claims(&user);
         crate::cedar::enforcement::check_asset_permission_by_id(
-            state.services().db(),
+            state.services(),
             authorizer,
             &claims,
             "Relate",
@@ -124,7 +124,7 @@ pub async fn delete_relation(
         .await?;
     }
 
-    RelationService::delete(state.services().db(), &id, user_id).await?;
+    RelationService::delete(state.services(), &id, user_id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
@@ -145,7 +145,7 @@ pub async fn get_asset_relations(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<Relation>>> {
-    let relations = RelationService::get_asset_relations(state.services().db(), &id).await?;
+    let relations = RelationService::get_asset_relations(state.services(), &id).await?;
     Ok(Json(relations))
 }
 
@@ -168,6 +168,6 @@ pub async fn traverse_graph(
     Path(id): Path<String>,
     Query(params): Query<TraverseParams>,
 ) -> Result<Json<Vec<GraphNode>>> {
-    let nodes = RelationService::traverse_graph(state.services().db(), &id, params.depth).await?;
+    let nodes = RelationService::traverse_graph(state.services(), &id, params.depth).await?;
     Ok(Json(nodes))
 }

@@ -142,6 +142,7 @@ mod authenticated_user_tests {
             user_id: "user123".to_string(),
             email: Some("user@example.com".to_string()),
             username: Some("john_doe".to_string()),
+            claims_extra: None,
         };
 
         assert_eq!(user.user_id, "user123");
@@ -155,6 +156,7 @@ mod authenticated_user_tests {
             user_id: "user456".to_string(),
             email: None,
             username: None,
+            claims_extra: None,
         };
 
         assert_eq!(user.user_id, "user456");
@@ -168,6 +170,7 @@ mod authenticated_user_tests {
             user_id: "user789".to_string(),
             email: Some("user@test.com".to_string()),
             username: None,
+            claims_extra: None,
         };
 
         assert_eq!(user.user_id, "user789");
@@ -181,6 +184,7 @@ mod authenticated_user_tests {
             user_id: "admin@example.com".to_string(),
             email: Some("admin@example.com".to_string()),
             username: Some("admin".to_string()),
+            claims_extra: None,
         };
 
         assert_eq!(user.user_id, "admin@example.com");

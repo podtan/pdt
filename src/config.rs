@@ -97,11 +97,28 @@ impl From<CedarConfig> for pep::cedar::CedarConfig {
     }
 }
 
+/// Database backend type
+#[derive(Debug, Clone, PartialEq)]
+pub enum DatabaseBackend {
+    Mongodb,
+    #[cfg(feature = "sqlite-backend")]
+    Sqlite,
+}
+
+impl Default for DatabaseBackend {
+    fn default() -> Self {
+        DatabaseBackend::Mongodb
+    }
+}
+
 /// Main application configuration
 #[derive(Debug, Clone)]
 pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
+    pub database_backend: DatabaseBackend,
+    #[cfg(feature = "sqlite-backend")]
+    pub sqlite_path: String,
     pub auth: AuthConfig,
     pub cedar: CedarConfig,
 }
@@ -110,6 +127,16 @@ impl Config {
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self> {
         let cedar = CedarConfig::default();
+
+        let database_backend = match env::var("PDT_DB_BACKEND")
+            .unwrap_or_else(|_| "mongodb".to_string())
+            .to_lowercase()
+            .as_str()
+        {
+            #[cfg(feature = "sqlite-backend")]
+            "sqlite" => DatabaseBackend::Sqlite,
+            _ => DatabaseBackend::Mongodb,
+        };
 
         Ok(Config {
             server: ServerConfig {
@@ -120,13 +147,10 @@ impl Config {
                     .context("Invalid PDT_PORT")?,
             },
             database: DatabaseConfig {
-                url: env::var("DOCUMENTDB_URL").context("DOCUMENTDB_URL must be set")?,
-                username: env::var("DOCUMENTDB_USERNAME")
-                    .context("DOCUMENTDB_USERNAME must be set")?,
-                password: env::var("DOCUMENTDB_PASSWORD")
-                    .context("DOCUMENTDB_PASSWORD must be set")?,
-                database: env::var("DOCUMENTDB_DATABASE")
-                    .context("DOCUMENTDB_DATABASE must be set")?,
+                url: env::var("DOCUMENTDB_URL").unwrap_or_default(),
+                username: env::var("DOCUMENTDB_USERNAME").unwrap_or_default(),
+                password: env::var("DOCUMENTDB_PASSWORD").unwrap_or_default(),
+                database: env::var("DOCUMENTDB_DATABASE").unwrap_or_default(),
                 tls: env::var("DOCUMENTDB_TLS")
                     .unwrap_or_else(|_| "false".to_string())
                     .parse()
@@ -136,6 +160,10 @@ impl Config {
                     .parse()
                     .unwrap_or(false),
             },
+            database_backend,
+            #[cfg(feature = "sqlite-backend")]
+            sqlite_path: env::var("SQLITE_PATH")
+                .unwrap_or_else(|_| "pdt.db".to_string()),
             auth: AuthConfig {
                 enabled: env::var("AUTH_ENABLED")
                     .unwrap_or_else(|_| "true".to_string())
