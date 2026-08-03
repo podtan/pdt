@@ -1,7 +1,7 @@
 //! Audit handlers
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query},
     Json,
 };
 use serde::Deserialize;
@@ -52,11 +52,11 @@ fn default_history_limit() -> i64 {
     tag = "audit",
 )]
 pub async fn list_audit_entries(
-    State(services): State<crate::cedar::enforcement::AppState>,
+    tx: crate::cedar::enforcement::TenantState,
     Query(params): Query<AuditListParams>,
 ) -> Result<Json<PaginatedResponse<AuditEntry>>> {
     let (entries, next_cursor) = AuditService::list(
-        services.services(),
+        tx.services(),
         params.entity_type.as_deref(),
         params.entity_id.as_deref(),
         params.user_id.as_deref(),
@@ -87,10 +87,10 @@ pub async fn list_audit_entries(
     tag = "audit",
 )]
 pub async fn get_asset_history(
-    State(services): State<crate::cedar::enforcement::AppState>,
+    tx: crate::cedar::enforcement::TenantState,
     Path(id): Path<String>,
     Query(params): Query<HistoryParams>,
 ) -> Result<Json<Vec<AuditEntry>>> {
-    let entries = AuditService::get_asset_history(services.services(), &id, params.limit).await?;
+    let entries = AuditService::get_asset_history(tx.services(), &id, params.limit).await?;
     Ok(Json(entries))
 }

@@ -13,6 +13,7 @@ pub mod models;
 pub mod openapi;
 pub mod repository;
 pub mod service;
+pub mod tenant;
 
 pub use config::Config;
 pub use error::{ApiError, Result};

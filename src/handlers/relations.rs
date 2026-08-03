@@ -1,7 +1,7 @@
 //! Relation handlers
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query},
     Json,
 };
 use pep::oidc::types::JwtClaims;
@@ -9,7 +9,7 @@ use serde::Deserialize;
 use utoipa::IntoParams;
 
 use crate::auth::AuthenticatedUser;
-use crate::cedar::enforcement::AppState;
+use crate::cedar::enforcement::TenantState;
 use crate::error::Result;
 use crate::models::{CreateRelationRequest, Relation};
 use crate::service::{relation_service::GraphNode, RelationService};
@@ -45,17 +45,17 @@ fn extract_claims(user: &AuthenticatedUser) -> JwtClaims {
     tag = "relations",
 )]
 pub async fn create_relation(
-    State(state): State<AppState>,
+    tx: TenantState,
     user: AuthenticatedUser,
     Json(request): Json<CreateRelationRequest>,
 ) -> Result<Json<Relation>> {
     let user_id = &user.user_id;
 
     // Cedar enforcement: check permission on both assets
-    if let Some(ref authorizer) = state.authorizer() {
+    if let Some(ref authorizer) = tx.authorizer() {
         let claims = extract_claims(&user);
         crate::cedar::enforcement::check_relation_permission(
-            state.services(),
+            tx.services(),
             authorizer,
             &claims,
             "Relate",
@@ -65,7 +65,7 @@ pub async fn create_relation(
         .await?;
     }
 
-    let relation = RelationService::create(state.services(), request, user_id).await?;
+    let relation = RelationService::create(tx.services(), request, user_id).await?;
     Ok(Json(relation))
 }
 
@@ -83,10 +83,10 @@ pub async fn create_relation(
     tag = "relations",
 )]
 pub async fn get_relation(
-    State(state): State<AppState>,
+    tx: TenantState,
     Path(id): Path<String>,
 ) -> Result<Json<Relation>> {
-    let relation = RelationService::get(state.services(), &id).await?;
+    let relation = RelationService::get(tx.services(), &id).await?;
     Ok(Json(relation))
 }
 
@@ -104,18 +104,18 @@ pub async fn get_relation(
     tag = "relations",
 )]
 pub async fn delete_relation(
-    State(state): State<AppState>,
+    tx: TenantState,
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user_id = &user.user_id;
 
     // Cedar enforcement: check permission on the relation's source asset
-    if let Some(ref authorizer) = state.authorizer() {
-        let relation = RelationService::get(state.services(), &id).await?;
+    if let Some(ref authorizer) = tx.authorizer() {
+        let relation = RelationService::get(tx.services(), &id).await?;
         let claims = extract_claims(&user);
         crate::cedar::enforcement::check_asset_permission_by_id(
-            state.services(),
+            tx.services(),
             authorizer,
             &claims,
             "Relate",
@@ -124,7 +124,7 @@ pub async fn delete_relation(
         .await?;
     }
 
-    RelationService::delete(state.services(), &id, user_id).await?;
+    RelationService::delete(tx.services(), &id, user_id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
@@ -142,10 +142,10 @@ pub async fn delete_relation(
     tag = "relations",
 )]
 pub async fn get_asset_relations(
-    State(state): State<AppState>,
+    tx: TenantState,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<Relation>>> {
-    let relations = RelationService::get_asset_relations(state.services(), &id).await?;
+    let relations = RelationService::get_asset_relations(tx.services(), &id).await?;
     Ok(Json(relations))
 }
 
@@ -164,10 +164,10 @@ pub async fn get_asset_relations(
     tag = "relations",
 )]
 pub async fn traverse_graph(
-    State(state): State<AppState>,
+    tx: TenantState,
     Path(id): Path<String>,
     Query(params): Query<TraverseParams>,
 ) -> Result<Json<Vec<GraphNode>>> {
-    let nodes = RelationService::traverse_graph(state.services(), &id, params.depth).await?;
+    let nodes = RelationService::traverse_graph(tx.services(), &id, params.depth).await?;
     Ok(Json(nodes))
 }

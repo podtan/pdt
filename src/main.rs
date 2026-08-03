@@ -6,22 +6,34 @@ use axum::{
     Router,
 };
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use pdt::{auth::middleware::AuthLayer, config::Config, db::Database, handlers, openapi::ApiDoc, service::Services};
+use pdt::auth::middleware::AuthLayer;
+use pdt::config::{Config, DatabaseBackend};
+use pdt::db::Database;
+use pdt::handlers;
+use pdt::openapi::ApiDoc;
+use pdt::service::Services;
+use pdt::tenant::TenantPoolManager;
 use pdt::repository::{
     MongoAssetRepository, MongoAuditRepository, MongoCollectionRepository,
     MongoRelationRepository,
 };
-use pdt::config::DatabaseBackend;
-use std::sync::Arc;
 use pep::oidc_resource_server::ResourceServerClient;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
+
+#[cfg(feature = "sqlite-backend")]
+use pdt::repository::{
+    SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
+    SqliteRelationRepository,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -64,11 +76,6 @@ async fn main() -> anyhow::Result<()> {
         }
         #[cfg(feature = "sqlite-backend")]
         DatabaseBackend::Sqlite => {
-            use pdt::repository::{
-                SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
-                SqliteRelationRepository,
-            };
-
             let db_path = &config.sqlite_path;
             tracing::info!("Connecting to SQLite: {}", db_path);
 
@@ -133,6 +140,12 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Cedar authorization disabled");
         None
     };
+
+    // Initialize multi-tenant pool manager
+    let instances_dir = std::env::var("PDT_INSTANCES_DIR")
+        .unwrap_or_else(|_| "/data/instances".to_string());
+    let tenant_manager = TenantPoolManager::new(services, PathBuf::from(&instances_dir));
+    tracing::info!("Multi-tenant routing enabled (instances dir: {})", instances_dir);
 
     // Initialize auth
     let auth_client = ResourceServerClient::new();
@@ -216,6 +229,9 @@ async fn main() -> anyhow::Result<()> {
             "/api/assets/{id}/history",
             get(handlers::audit::get_asset_history),
         )
+        // Tenant management endpoints
+        .route("/api/instances/{instance_id}/provision", post(handlers::instances::provision_instance))
+        .route("/api/instances", get(handlers::instances::list_instances))
         // Middleware (auth + tracing + CORS)
         .layer(TraceLayer::new_for_http())
         .layer(auth_layer)
@@ -235,7 +251,7 @@ async fn main() -> anyhow::Result<()> {
                 .url("/api-docs/openapi.json", ApiDoc::openapi()),
         )
         .with_state((
-            services,
+            tenant_manager,
             authorizer.map(Arc::new),
         ));
 

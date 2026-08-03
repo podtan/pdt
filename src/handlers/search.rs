@@ -1,14 +1,14 @@
 //! Search handlers
 
 use axum::{
-    extract::{Query, State},
+    extract::Query,
     Json,
 };
 use serde::Deserialize;
 use utoipa::IntoParams;
 
 use crate::auth::AuthenticatedUser;
-use crate::cedar::enforcement::AppState;
+use crate::cedar::enforcement::TenantState;
 use crate::error::Result;
 use crate::models::{
     generate_snippet, PaginatedResponse, SearchResult, TagSummary,
@@ -74,7 +74,7 @@ fn parse_tag_filters(params: &SearchParams) -> Vec<(String, String)> {
     tag = "search",
 )]
 pub async fn search(
-    State(state): State<AppState>,
+    tx: TenantState,
     user: AuthenticatedUser,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<serde_json::Value>> {
@@ -82,7 +82,7 @@ pub async fn search(
     let tag_filters = parse_tag_filters(&params);
 
     let (assets, next_cursor) = SearchService::search(
-        state.services(),
+        tx.services(),
         params.q.as_deref(),
         tag_filters,
         params.limit,
@@ -91,7 +91,7 @@ pub async fn search(
     .await?;
 
     // Filter assets by Cedar View permission
-    let visible_assets = if let Some(authorizer) = state.authorizer() {
+    let visible_assets = if let Some(authorizer) = tx.authorizer() {
         crate::cedar::enforcement::filter_by_permission(
             authorizer,
             &claims,

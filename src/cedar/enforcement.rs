@@ -11,7 +11,9 @@
 
 use std::sync::Arc;
 
-use axum::extract::FromRef;
+use axum::extract::{FromRef, FromRequestParts};
+use axum::http::request::Parts;
+use axum::response::{IntoResponse, Response};
 use cedar_policy::{Context, Entities, Request};
 use pep::cedar::CedarAuthorizer;
 use pep::oidc::types::JwtClaims;
@@ -20,13 +22,17 @@ use crate::auth::AuthenticatedUser;
 use crate::error::ApiError;
 use crate::models::Asset;
 use crate::service::Services;
+use crate::tenant::TenantPoolManager;
 
 /// The raw application state type passed to `Router::with_state()`.
 /// This is a tuple so axum can extract different parts via `FromRef`.
-pub type AppRawState = (Services, Option<Arc<CedarAuthorizer>>);
+pub type AppRawState = (TenantPoolManager, Option<Arc<CedarAuthorizer>>);
 
 /// Application state shared across all handlers.
 /// Implements `FromRef` so axum can extract it from the tuple state.
+///
+/// NOTE: This resolves to the GLOBAL services. For tenant-aware services,
+/// use the `TenantState` extractor instead.
 #[derive(Clone)]
 pub struct AppState {
     pub services: Services,
@@ -45,18 +51,114 @@ impl AppState {
     }
 }
 
+/// Tenant-aware state extractor.
+///
+/// Reads the `X-Instance-Id` header from the request and resolves the correct
+/// `Services` (per-instance SQLite or global). Use this in handlers that need
+/// tenant routing:
+///
+/// ```rust,ignore
+/// pub async fn create_asset(
+///     tx: TenantState,
+///     user: AuthenticatedUser,
+///     Json(request): Json<CreateAssetRequest>,
+/// ) -> Result<Json<Asset>> {
+///     let services = &tx.services;
+///     // ...
+/// }
+/// ```
+#[derive(Clone)]
+pub struct TenantState {
+    pub services: Services,
+    pub authorizer: Option<Arc<CedarAuthorizer>>,
+    pub instance_id: Option<String>,
+}
+
+impl TenantState {
+    pub fn services(&self) -> &Services {
+        &self.services
+    }
+
+    pub fn authorizer(&self) -> Option<&CedarAuthorizer> {
+        self.authorizer.as_ref().map(|v| v.as_ref())
+    }
+
+    pub fn instance_id(&self) -> Option<&str> {
+        self.instance_id.as_deref()
+    }
+}
+
+/// Implement FromRequestParts on the concrete AppRawState type.
+impl<S> FromRequestParts<S> for TenantState
+where
+    S: Send + Sync,
+    TenantPoolManager: FromRef<S>,
+    AuthorizerRef: FromRef<S>,
+{
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        use axum::http::StatusCode;
+
+        // Extract X-Instance-Id header
+        let instance_id = parts
+            .headers
+            .get("X-Instance-Id")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_string());
+
+        let manager = TenantPoolManager::from_ref(state);
+        let auth_ref = AuthorizerRef::from_ref(state);
+
+        let services = manager
+            .get_services(instance_id.as_deref())
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to resolve tenant services: {}", e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to resolve tenant: {}", e),
+                )
+                    .into_response()
+            })?;
+
+        Ok(TenantState {
+            services,
+            authorizer: auth_ref.0,
+            instance_id,
+        })
+    }
+}
+
+/// Wrapper for the optional Cedar authorizer so we can implement `FromRef`.
+#[derive(Clone)]
+pub struct AuthorizerRef(pub Option<Arc<CedarAuthorizer>>);
+
+impl AuthorizerRef {
+    pub fn as_ref(&self) -> Option<&CedarAuthorizer> {
+        self.0.as_ref().map(|v| v.as_ref())
+    }
+}
+
+/// Implement FromRef for backward-compatible AppState (global services).
 impl FromRef<AppRawState> for AppState {
     fn from_ref(state: &AppRawState) -> Self {
         AppState {
-            services: state.0.clone(),
+            services: state.0.global().clone(),
             authorizer: state.1.clone(),
         }
     }
 }
 
-impl FromRef<AppRawState> for Services {
+impl FromRef<AppRawState> for TenantPoolManager {
     fn from_ref(state: &AppRawState) -> Self {
         state.0.clone()
+    }
+}
+
+impl FromRef<AppRawState> for AuthorizerRef {
+    fn from_ref(state: &AppRawState) -> Self {
+        AuthorizerRef(state.1.clone())
     }
 }
 

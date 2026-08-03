@@ -1,7 +1,7 @@
 //! Asset handlers
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query},
     Json,
 };
 use pep::oidc::types::JwtClaims;
@@ -9,7 +9,7 @@ use serde::Deserialize;
 use utoipa::IntoParams;
 
 use crate::auth::AuthenticatedUser;
-use crate::cedar::enforcement::AppState;
+use crate::cedar::enforcement::TenantState;
 use crate::error::Result;
 use crate::models::{
     AddTagRequest, Asset, CreateAssetRequest, PaginatedResponse, Tag,
@@ -60,13 +60,13 @@ pub struct ListAssetsParams {
     tag = "assets",
 )]
 pub async fn create_asset(
-    State(state): State<AppState>,
+    tx: TenantState,
     user: AuthenticatedUser,
     Json(request): Json<CreateAssetRequest>,
 ) -> Result<Json<Asset>> {
     let user_id = &user.user_id;
 
-    let asset = AssetService::create(state.services(), request, user_id).await?;
+    let asset = AssetService::create(tx.services(), request, user_id).await?;
     Ok(Json(asset))
 }
 
@@ -84,14 +84,14 @@ pub async fn create_asset(
     tag = "assets",
 )]
 pub async fn get_asset(
-    State(state): State<AppState>,
+    tx: TenantState,
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<Json<Asset>> {
-    let asset = AssetService::get(state.services(), &id).await?;
+    let asset = AssetService::get(tx.services(), &id).await?;
 
     // Cedar enforcement: skip if no authorizer or asset has no auth_context
-    if let Some(authorizer) = state.authorizer() {
+    if let Some(authorizer) = tx.authorizer() {
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
             crate::cedar::enforcement::check_permission(authorizer, &claims, "View", &asset)?;
@@ -116,7 +116,7 @@ pub async fn get_asset(
     tag = "assets",
 )]
 pub async fn update_asset(
-    State(state): State<AppState>,
+    tx: TenantState,
     user: AuthenticatedUser,
     Path(id): Path<String>,
     Json(request): Json<UpdateAssetRequest>,
@@ -124,15 +124,15 @@ pub async fn update_asset(
     let user_id = &user.user_id;
 
     // Cedar enforcement on the current state of the asset
-    if let Some(authorizer) = state.authorizer() {
-        let asset = AssetService::get(state.services(), &id).await?;
+    if let Some(authorizer) = tx.authorizer() {
+        let asset = AssetService::get(tx.services(), &id).await?;
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
             crate::cedar::enforcement::check_permission(authorizer, &claims, "Edit", &asset)?;
         }
     }
 
-    let asset = AssetService::update(state.services(), &id, request, user_id).await?;
+    let asset = AssetService::update(tx.services(), &id, request, user_id).await?;
     Ok(Json(asset))
 }
 
@@ -150,22 +150,22 @@ pub async fn update_asset(
     tag = "assets",
 )]
 pub async fn delete_asset(
-    State(state): State<AppState>,
+    tx: TenantState,
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user_id = &user.user_id;
 
     // Cedar enforcement
-    if let Some(authorizer) = state.authorizer() {
-        let asset = AssetService::get(state.services(), &id).await?;
+    if let Some(authorizer) = tx.authorizer() {
+        let asset = AssetService::get(tx.services(), &id).await?;
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
             crate::cedar::enforcement::check_permission(authorizer, &claims, "Delete", &asset)?;
         }
     }
 
-    AssetService::delete(state.services(), &id, user_id).await?;
+    AssetService::delete(tx.services(), &id, user_id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
@@ -180,12 +180,12 @@ pub async fn delete_asset(
     tag = "assets",
 )]
 pub async fn list_assets(
-    State(state): State<AppState>,
+    tx: TenantState,
     user: AuthenticatedUser,
     Query(params): Query<ListAssetsParams>,
 ) -> Result<Json<PaginatedResponse<Asset>>> {
     let (assets, next_cursor) = AssetService::list(
-        state.services(),
+        tx.services(),
         params.limit,
         params.cursor.as_deref(),
         params.asset_type.as_deref(),
@@ -195,7 +195,7 @@ pub async fn list_assets(
     .await?;
 
     // Cedar enforcement: filter out assets the user cannot view
-    let filtered = if let Some(authorizer) = state.authorizer() {
+    let filtered = if let Some(authorizer) = tx.authorizer() {
         let claims = extract_claims(&user);
         crate::cedar::enforcement::filter_by_permission(authorizer, &claims, "View", assets)
     } else {
@@ -224,7 +224,7 @@ pub async fn list_assets(
     tag = "assets",
 )]
 pub async fn add_tag(
-    State(state): State<AppState>,
+    tx: TenantState,
     user: AuthenticatedUser,
     Path(id): Path<String>,
     Json(request): Json<AddTagRequest>,
@@ -232,15 +232,15 @@ pub async fn add_tag(
     let user_id = &user.user_id;
 
     // Cedar enforcement for Tag action
-    if let Some(authorizer) = state.authorizer() {
-        let asset = AssetService::get(state.services(), &id).await?;
+    if let Some(authorizer) = tx.authorizer() {
+        let asset = AssetService::get(tx.services(), &id).await?;
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
             crate::cedar::enforcement::check_permission(authorizer, &claims, "Tag", &asset)?;
         }
     }
 
-    let tag = AssetService::add_tag(state.services(), &id, request, user_id).await?;
+    let tag = AssetService::add_tag(tx.services(), &id, request, user_id).await?;
     Ok(Json(tag))
 }
 
@@ -259,22 +259,22 @@ pub async fn add_tag(
     tag = "assets",
 )]
 pub async fn remove_tag(
-    State(state): State<AppState>,
+    tx: TenantState,
     user: AuthenticatedUser,
     Path((id, tag_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
     let user_id = &user.user_id;
 
     // Cedar enforcement for Tag action
-    if let Some(authorizer) = state.authorizer() {
-        let asset = AssetService::get(state.services(), &id).await?;
+    if let Some(authorizer) = tx.authorizer() {
+        let asset = AssetService::get(tx.services(), &id).await?;
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
             crate::cedar::enforcement::check_permission(authorizer, &claims, "Tag", &asset)?;
         }
     }
 
-    AssetService::remove_tag(state.services(), &id, &tag_id, user_id).await?;
+    AssetService::remove_tag(tx.services(), &id, &tag_id, user_id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
@@ -293,14 +293,14 @@ pub async fn remove_tag(
     tag = "assets",
 )]
 pub async fn update_auth_context(
-    State(state): State<AppState>,
+    tx: TenantState,
     user: AuthenticatedUser,
     Path(id): Path<String>,
     Json(request): Json<UpdateAuthContextRequest>,
 ) -> Result<Json<Asset>> {
     let user_id = &user.user_id;
 
-    let asset = AssetService::update_auth_context(state.services(), &id, request, user_id).await?;
+    let asset = AssetService::update_auth_context(tx.services(), &id, request, user_id).await?;
     Ok(Json(asset))
 }
 

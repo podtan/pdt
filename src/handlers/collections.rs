@@ -1,7 +1,7 @@
 //! Collection handlers
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query},
     Json,
 };
 use utoipa::IntoParams;
@@ -39,13 +39,13 @@ fn default_limit() -> i64 {
     tag = "collections",
 )]
 pub async fn create_collection(
-    State(services): State<crate::cedar::enforcement::AppState>,
+    tx: crate::cedar::enforcement::TenantState,
     user: AuthenticatedUser,
     Json(request): Json<CreateCollectionRequest>,
 ) -> Result<Json<Collection>> {
     let user_id = &user.user_id;
 
-    let collection = CollectionService::create(services.services(), request, user_id).await?;
+    let collection = CollectionService::create(tx.services(), request, user_id).await?;
     Ok(Json(collection))
 }
 
@@ -63,10 +63,10 @@ pub async fn create_collection(
     tag = "collections",
 )]
 pub async fn get_collection(
-    State(services): State<crate::cedar::enforcement::AppState>,
+    tx: crate::cedar::enforcement::TenantState,
     Path(id): Path<String>,
 ) -> Result<Json<Collection>> {
-    let collection = CollectionService::get(services.services(), &id).await?;
+    let collection = CollectionService::get(tx.services(), &id).await?;
     Ok(Json(collection))
 }
 
@@ -85,14 +85,14 @@ pub async fn get_collection(
     tag = "collections",
 )]
 pub async fn update_collection(
-    State(services): State<crate::cedar::enforcement::AppState>,
+    tx: crate::cedar::enforcement::TenantState,
     user: AuthenticatedUser,
     Path(id): Path<String>,
     Json(request): Json<UpdateCollectionRequest>,
 ) -> Result<Json<Collection>> {
     let user_id = &user.user_id;
 
-    let collection = CollectionService::update(services.services(), &id, request, user_id).await?;
+    let collection = CollectionService::update(tx.services(), &id, request, user_id).await?;
     Ok(Json(collection))
 }
 
@@ -110,13 +110,13 @@ pub async fn update_collection(
     tag = "collections",
 )]
 pub async fn delete_collection(
-    State(services): State<crate::cedar::enforcement::AppState>,
+    tx: crate::cedar::enforcement::TenantState,
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let user_id = &user.user_id;
 
-    CollectionService::delete(services.services(), &id, user_id).await?;
+    CollectionService::delete(tx.services(), &id, user_id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
@@ -131,11 +131,11 @@ pub async fn delete_collection(
     tag = "collections",
 )]
 pub async fn list_collections(
-    State(services): State<crate::cedar::enforcement::AppState>,
+    tx: crate::cedar::enforcement::TenantState,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResponse<Collection>>> {
     let (collections, next_cursor) =
-        CollectionService::list(services.services(), params.limit, params.cursor.as_deref()).await?;
+        CollectionService::list(tx.services(), params.limit, params.cursor.as_deref()).await?;
 
     Ok(Json(PaginatedResponse {
         data: collections,
@@ -159,14 +159,14 @@ pub async fn list_collections(
     tag = "collections",
 )]
 pub async fn add_asset(
-    State(services): State<crate::cedar::enforcement::AppState>,
+    tx: crate::cedar::enforcement::TenantState,
     user: AuthenticatedUser,
     Path(id): Path<String>,
     Json(request): Json<AddAssetRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let user_id = &user.user_id;
 
-    CollectionService::add_asset(services.services(), &id, &request.asset_id, user_id).await?;
+    CollectionService::add_asset(tx.services(), &id, &request.asset_id, user_id).await?;
     Ok(Json(serde_json::json!({ "added": true })))
 }
 
@@ -185,12 +185,12 @@ pub async fn add_asset(
     tag = "collections",
 )]
 pub async fn remove_asset(
-    State(services): State<crate::cedar::enforcement::AppState>,
+    tx: crate::cedar::enforcement::TenantState,
     user: AuthenticatedUser,
     Path((id, asset_id)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
     let user_id = &user.user_id;
 
-    CollectionService::remove_asset(services.services(), &id, &asset_id, user_id).await?;
+    CollectionService::remove_asset(tx.services(), &id, &asset_id, user_id).await?;
     Ok(Json(serde_json::json!({ "removed": true })))
 }

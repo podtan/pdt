@@ -3,11 +3,10 @@
 //! Serves PDT's Cedar policies over HTTP so other services (NGHR, Torpi) can
 //! fetch them centrally via the `policy_store_url` config option.
 
-use axum::{Json, extract::State};
+use axum::Json;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::cedar::enforcement::AppState;
 use crate::error::Result;
 
 /// Response from the Cedar policy store endpoint.
@@ -33,9 +32,7 @@ pub struct CedarPolicyResponse {
     ),
     tag = "cedar"
 )]
-pub async fn get_cedar_policies(
-    State(_state): State<AppState>,
-) -> Result<Json<CedarPolicyResponse>> {
+pub async fn get_cedar_policies() -> Result<Json<CedarPolicyResponse>> {
     // Serve the embedded policies (same as what the binary was compiled with)
     let policy = include_str!("../../policies/rbac.cedar");
     let schema = include_str!("../../policies/schema.cedarschema");
