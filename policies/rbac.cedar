@@ -16,6 +16,18 @@ permit(
     principal has role && principal.role == "admin"
 };
 
+// ─── Instance type protection ───
+// Only admins can create or modify assets tagged as instance-type.
+// This prevents non-admin users from injecting new instance types via PDT API directly.
+forbid(
+    principal,
+    action in [Action::"Create", Action::"Edit", Action::"Delete", Action::"Tag"],
+    resource
+) when {
+    resource has asset_type && resource.asset_type == "instance-type"
+    && !(principal has role && principal.role == "admin")
+};
+
 // All authenticated users can view assets (unless restricted by visibility/confidentiality)
 permit(
     principal,
