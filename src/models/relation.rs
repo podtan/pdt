@@ -23,6 +23,8 @@ pub enum RelationType {
     Supersedes,
     /// Assets enhance each other's value
     Complements,
+    /// Owner has ownership of a resource (e.g. User → Instance)
+    HasInstance,
 }
 
 impl std::fmt::Display for RelationType {
@@ -34,6 +36,7 @@ impl std::fmt::Display for RelationType {
             RelationType::DependsOn => write!(f, "depends_on"),
             RelationType::Supersedes => write!(f, "supersedes"),
             RelationType::Complements => write!(f, "complements"),
+            RelationType::HasInstance => write!(f, "has_instance"),
         }
     }
 }

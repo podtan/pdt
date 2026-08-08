@@ -6,7 +6,7 @@
 //!
 //! Instance pools are created lazily on first request and cached.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -187,8 +187,27 @@ impl TenantPoolManager {
     }
 
     /// Get a list of all active instance IDs.
+    ///
+    /// Scans the instances directory for provisioned databases.
+    /// Includes both cached (in-memory) and disk-only instances.
     pub fn list_instances(&self) -> Vec<String> {
-        self.instances.read().unwrap().keys().cloned().collect()
+        let mut ids: HashSet<String> = self.instances.read().unwrap().keys().cloned().collect();
+
+        // Also scan the directory for provisioned instances on disk
+        if let Ok(entries) = std::fs::read_dir(&self.instances_dir) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if entry.path().is_dir() {
+                        // Check if it has a pdt.db file
+                        if entry.path().join("pdt.db").exists() {
+                            ids.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        ids.into_iter().collect()
     }
 
     /// Get the global services reference.

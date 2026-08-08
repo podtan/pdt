@@ -27,6 +27,7 @@ impl SqliteRelationRepository {
             "depends_on" => RelationType::DependsOn,
             "supersedes" => RelationType::Supersedes,
             "complements" => RelationType::Complements,
+            "has_instance" => RelationType::HasInstance,
             _ => RelationType::RelatedTo,
         }
     }
