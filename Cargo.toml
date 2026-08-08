@@ -1,6 +1,6 @@
 [package]
 name = "pdt"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "Platform Data Toolkit - Enterprise Knowledge Silo API Server"
 license = "MIT OR Apache-2.0"
