@@ -25,6 +25,8 @@ pub enum RelationType {
     Complements,
     /// Owner has ownership of a resource (e.g. User → Instance)
     HasInstance,
+    /// User owns an agent (e.g. User → Agent)
+    HasAgent,
 }
 
 impl std::fmt::Display for RelationType {
@@ -37,6 +39,7 @@ impl std::fmt::Display for RelationType {
             RelationType::Supersedes => write!(f, "supersedes"),
             RelationType::Complements => write!(f, "complements"),
             RelationType::HasInstance => write!(f, "has_instance"),
+            RelationType::HasAgent => write!(f, "has_agent"),
         }
     }
 }
