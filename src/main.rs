@@ -231,7 +231,9 @@ async fn main() -> anyhow::Result<()> {
         )
         // Tenant management endpoints
         .route("/api/instances/{instance_id}/provision", post(handlers::instances::provision_instance))
+        .route("/api/instances/{instance_id}", axum::routing::delete(handlers::instances::delete_instance))
         .route("/api/instances", get(handlers::instances::list_instances))
+        .route("/api/instances/tree", get(handlers::instances::list_instance_tree))
         // Middleware (auth + tracing + CORS)
         .layer(TraceLayer::new_for_http())
         .layer(auth_layer)

@@ -50,6 +50,11 @@ use utoipa::OpenApi;
         crate::handlers::audit::get_asset_history,
         // Cedar policy store
         crate::handlers::cedar::get_cedar_policies,
+        // Instance (multi-tenant) routes
+        crate::handlers::instances::provision_instance,
+        crate::handlers::instances::delete_instance,
+        crate::handlers::instances::list_instances,
+        crate::handlers::instances::list_instance_tree,
     ),
     components(schemas(
         crate::handlers::health::HealthResponse,
