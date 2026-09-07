@@ -18,22 +18,21 @@ pub struct AuthenticatedUser {
 impl AuthenticatedUser {
     /// Build a `JwtClaims` suitable for Cedar evaluation from this user.
     ///
-    /// Propagates `role` and `groups` from the original JWT `extra` map.
-    /// When `claims_extra` is `None` (e.g. unit-test construction), falls back
-    /// to `role = "viewer"` — a safe, least-privilege default.
+    /// Propagates `role` and `groups` from the original JWT `extra` map
+    /// verbatim. NO default role on this path: a role-less principal stays
+    /// role-less and Cedar's role-gated permits default-deny it — an HONEST
+    /// authz denial. b82a1925 guard-1 port: the old silent `role="viewer"`
+    /// insertion converted unenriched principals into lying 403s; enrichment
+    /// failure now 401s in the middleware before a principal is built.
+    /// The `None` arm (unit-test construction only) keeps its test default.
     pub fn to_cedar_claims(&self) -> JwtClaims {
         let mut extra = std::collections::HashMap::new();
 
         match &self.claims_extra {
             Some(orig) => {
-                // Propagate role if present
+                // Propagate role if present — verbatim, never defaulted.
                 if let Some(role) = orig.get("role") {
                     extra.insert("role".to_string(), role.clone());
-                } else {
-                    extra.insert(
-                        "role".to_string(),
-                        Value::String("viewer".to_string()),
-                    );
                 }
                 // Propagate groups if present
                 if let Some(groups) = orig.get("groups") {

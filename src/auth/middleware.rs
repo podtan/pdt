@@ -102,6 +102,12 @@ where
                 Ok(mut claims) => {
                     // Adaptive claims enrichment: fill missing groups/role from OIDC userinfo
                     // This makes PDT work with Kanidm (no groups in AT) and Keycloak/Auth0 (groups in AT)
+                    //
+                    // b82a1925 guard-1 port (class ruling 2026-09-07; fame 219717b):
+                    // enrichment failure = AUTHN failure → 401 with retry signal,
+                    // journaled at WARN. The previous "non-fatal" swallow let a
+                    // role-less principal fall through to the viewer default →
+                    // default-deny → a silent 403 that lied about authz.
                     if let Err(e) = client
                         .enrich_claims_with_userinfo(
                             &mut claims,
@@ -111,7 +117,12 @@ where
                         )
                         .await
                     {
-                        tracing::warn!("Userinfo enrichment failed (non-fatal): {}", e);
+                        tracing::warn!(
+                            "Auth: userinfo enrichment FAILED — answering 401 with retry \
+                             signal (default-role fallback removed, request fails loudly): {}",
+                            e
+                        );
+                        return Ok(AuthError::EnrichmentFailed(format!("{}", e)).into_response());
                     }
                     req.extensions_mut().insert(claims);
                     inner.call(req).await
