@@ -79,7 +79,21 @@ impl IntoResponse for AuthError {
                 (StatusCode::FORBIDDEN, self.to_string()).into_response()
             }
             AuthError::PepError(ref e) => {
-                (e.status_code(), self.to_string()).into_response()
+                let mut resp = (e.status_code(), self.to_string()).into_response();
+                // Contract (b82a1925 guard-1): EVERY 401 this service emits
+                // carries the challenge. pep-sourced JWT validation failures
+                // (garbage/malformed bearer → "Invalid JWT header") surface
+                // here as PepError(401) and were emitted bare — found in the
+                // v0.3.4 prod close-smoke (Paydar, 2026-09-08).
+                if resp.status() == StatusCode::UNAUTHORIZED {
+                    resp.headers_mut().insert(
+                        header::WWW_AUTHENTICATE,
+                        Self::www_authenticate("invalid bearer token")
+                            .parse()
+                            .expect("static header value"),
+                    );
+                }
+                resp
             }
             _ => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response(),
         }
@@ -120,5 +134,43 @@ mod tests {
         let resp = AuthError::EnrichmentFailed("x".to_string()).into_response();
         assert_ne!(resp.status(), StatusCode::FORBIDDEN);
         assert_ne!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+}
+
+// NOTE: appended tests — see also the guard-1 pins above.
+// Contract completion (v0.3.4 close-smoke finding, Paydar 2026-09-08):
+// EVERY 401 carries the challenge, including pep-sourced ones.
+#[cfg(test)]
+mod pep_401_challenge_tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn pep_sourced_401_carries_challenge() {
+        let resp = AuthError::PepError(pep::error::PepError::JwtValidation(
+            "Invalid JWT header".to_string(),
+        ))
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let www = resp
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .expect("WWW-Authenticate required on pep-sourced 401")
+            .to_str()
+            .unwrap();
+        assert!(www.starts_with("Bearer error=\"invalid_token\""), "{www}");
+    }
+
+    #[test]
+    fn pep_non_401_errors_do_not_carry_challenge() {
+        let resp = AuthError::PepError(pep::error::PepError::AuthorizationFailed(
+            "deny".to_string(),
+        ))
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(
+            resp.headers().get(header::WWW_AUTHENTICATE).is_none(),
+            "challenge belongs on authn 401s only — never on 403"
+        );
     }
 }
