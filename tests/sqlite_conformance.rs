@@ -11,7 +11,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
 use pdt::repository::{
-    SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
+    AssetRepository, SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
     SqliteRelationRepository,
 };
 
@@ -263,4 +263,85 @@ async fn sqlite_audit_get_entity_history() {
 async fn sqlite_asset_delete_cascades() {
     let (assets, relations, collections, audit) = setup_repos().await;
     common::asset_delete_cascades(&assets, &relations, &collections, &audit).await;
+}
+
+// ---------------------------------------------------------------------------
+// FTS5 expression-safety pins (Sep 7-8 prod incident).
+//
+// Raw user queries reached FTS5 MATCH as EXPRESSIONS: a bare `token:` reads
+// as a column filter and failed the whole request with `no such column:
+// <token>` (SQLx code 1) — 5 journal events, 3 seats, ~18h (Paydar's journal
+// receipt 3123190a on issue 09245606). The sanitizer reduces every query to
+// quoted phrases; these pins hold the shape closed.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sqlite_search_survives_fts5_metacharacter_queries() {
+    let (assets, _, _, _) = setup_repos().await;
+    assets
+        .create(
+            common::make_asset_request("Dispatch Guide", "rotate trustee creds"),
+            "user1",
+        )
+        .await
+        .unwrap();
+
+    // Every shape below 500'd in prod (or is the journal's exact token class):
+    // hyphen-split tokens, `col:term` column filters, numeric fragments,
+    // operator soup.
+    for q in [
+        "instance-type",                 // occ 3 — hyphen split → `no such column: type`
+        "type:dispatch",                 // column-filter class
+        "5063f004",                      // occ 1 — numeric fragment
+        "2",                             // occ 1 journal token
+        "mint:",                         // occ 2 class
+        "51d1",                          // occ 0 journal token
+        "a OR b NEAR(c",                 // operator soup
+        "TokenProvider client contract", // occ 2 shape — multi-word
+    ] {
+        let (res, _) = assets
+            .search(Some(q), vec![], 10, None)
+            .await
+            .unwrap_or_else(|e| panic!("search {:?} must not fail: {}", q, e));
+        assert_eq!(
+            res.len(),
+            0,
+            "query {:?} matches nothing in this seed set — but must not error",
+            q
+        );
+    }
+}
+
+#[tokio::test]
+async fn sqlite_search_still_finds_assets_through_sanitized_phrases() {
+    let (assets, _, _, _) = setup_repos().await;
+    assets
+        .create(
+            common::make_asset_request("Integration Probe", "dispatch wiring بانک"),
+            "user1",
+        )
+        .await
+        .unwrap();
+    assets
+        .create(common::make_asset_request("Unrelated", "nothing here"), "user1")
+        .await
+        .unwrap();
+
+    // Single tokens, multi-word queries, and unicode all keep matching.
+    for q in ["integration", "Integration Probe", "dispatch wiring", "بانک"] {
+        let (res, _) = assets
+            .search(Some(q), vec![], 10, None)
+            .await
+            .unwrap_or_else(|e| panic!("search {:?} must not fail: {}", q, e));
+        assert!(!res.is_empty(), "query {:?} should find the seeded asset", q);
+    }
+
+    let (res, _) = assets
+        .search(Some("integration"), vec![], 10, None)
+        .await
+        .unwrap();
+    assert!(
+        res.iter().all(|a| a.title == "Integration Probe"),
+        "sanitized match must stay precise, not widen to everything"
+    );
 }

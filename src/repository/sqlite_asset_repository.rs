@@ -104,6 +104,25 @@ impl SqliteAssetRepository {
     }
 }
 
+/// Reduce a raw user search string to a safe FTS5 MATCH expression.
+///
+/// Every non-alphanumeric-separated token is emitted as a double-quoted FTS5
+/// phrase (adjacent phrases = implicit AND). This strips ALL FTS5 query
+/// syntax from user input — column filters (`token:` → `no such column:`
+/// failures), boolean operators, NEAR, `*` prefixes, parentheses — while
+/// preserving plain multi-word matching. `char::is_alphanumeric` is
+/// unicode-aware, so Persian and other non-ASCII titles stay searchable.
+/// Quoted tokens can never contain a quote (the splitter removes them), so
+/// no escaping is needed. Empty/whitespace/symbol-only input yields an empty
+/// string; the caller skips the MATCH clause entirely in that case.
+fn build_fts_match_query(raw: &str) -> String {
+    raw.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\"{}\"", t))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[async_trait::async_trait]
 impl AssetRepository for SqliteAssetRepository {
     async fn create(&self, request: CreateAssetRequest, user_id: &str) -> Result<Asset> {
@@ -374,13 +393,22 @@ impl AssetRepository for SqliteAssetRepository {
              WHERE a.deleted_at IS NULL",
         );
 
-        // Full-text search via FTS5
-        if let Some(q) = query {
-            if !q.is_empty() {
-                query_str.push_str(
-                    " AND a.rowid IN (SELECT assets_fts.rowid FROM assets_fts WHERE assets_fts MATCH ?)",
-                );
-            }
+        // Full-text search via FTS5. The user string is reduced to quoted
+        // phrases BEFORE binding (see build_fts_match_query): FTS5 parses the
+        // MATCH string as an expression, where a bare `token:` reads as a
+        // column filter and fails the whole request with `no such column:
+        // <token>` (SQLx code 1) — the Sep 7-8 prod incident (5 events, 3
+        // seats: hyphenated, multi-word, and numeric queries all 500'd).
+        // The SQL parameter binding was always safe; the FTS5 expression was
+        // not.
+        let fts_query: Option<String> = query
+            .filter(|q| !q.is_empty())
+            .map(build_fts_match_query)
+            .filter(|q| !q.is_empty());
+        if fts_query.is_some() {
+            query_str.push_str(
+                " AND a.rowid IN (SELECT assets_fts.rowid FROM assets_fts WHERE assets_fts MATCH ?)",
+            );
         }
 
         // Tag filters
@@ -407,10 +435,8 @@ impl AssetRepository for SqliteAssetRepository {
 
         let mut q = sqlx::query_as::<_, AssetRow>(&query_str);
 
-        if let Some(q_text) = query {
-            if !q_text.is_empty() {
-                q = q.bind(q_text);
-            }
+        if let Some(q_text) = &fts_query {
+            q = q.bind(q_text);
         }
 
         for (category, value) in &tag_filters {
