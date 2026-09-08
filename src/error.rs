@@ -45,7 +45,6 @@ pub enum ApiError {
     #[error("Database error: {0}")]
     GenericDatabase(String),
 
-    #[cfg(feature = "sqlite-backend")]
     #[error("SQLx error: {0}")]
     Sqlx(#[from] sqlx::Error),
 
@@ -114,7 +113,6 @@ impl IntoResponse for ApiError {
                     "A database error occurred".to_string(),
                 )
             }
-            #[cfg(feature = "sqlite-backend")]
             ApiError::Sqlx(e) => {
                 tracing::error!("SQLx error: {}", e);
                 (

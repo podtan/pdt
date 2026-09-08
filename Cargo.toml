@@ -25,8 +25,11 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 mongodb = { version = "3", features = ["rustls-tls"] }
 bson = { version = "2", features = ["chrono-0_4", "uuid-1"] }
 
-# Database — SQLite backend
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "json"], optional = true }
+# Database — SQLite (ALSO load-bearing for multi-tenant instance routing:
+# every instance leaf is a SQLite DB via tenant.rs, independent of the root
+# backend — sqlx is therefore a non-optional dependency. The `sqlite-backend`
+# feature continues to gate only the ROOT-database repository selection.)
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "json"] }
 
 # Authentication & Authorization
 cedar-policy = "4"
@@ -54,7 +57,10 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 [features]
 default = ["mongodb-backend"]
 mongodb-backend = []
-sqlite-backend = ["dep:sqlx"]
+# Gates only the ROOT-database repository selection (sqlite asset/relation/
+# collection/audit repositories). Instance-leaf routing (tenant.rs) uses sqlx
+# unconditionally — see the sqlx dependency note above.
+sqlite-backend = []
 
 [dev-dependencies]
 tokio-test = "0.4"
