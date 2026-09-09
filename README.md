@@ -1,176 +1,151 @@
-# Platform Data Toolkit (PDT)
+# PDT — Platform Data Toolkit
 
-PDT is a centralized API server that serves as an enterprise knowledge silo for company-specific concepts, documents, and their relationships.
+A document/asset store API with relationship graphs, free-form tagging, full-text search,
+OIDC authentication, and Cedar-based authorization. Runs as a single global instance or as
+a tree of isolated per-tenant instances, each backed by its own SQLite database.
 
 ## Features
 
-- **Knowledge Asset Management**: Store and manage knowledge assets with rich metadata
-- **Tag-Based Classification**: Multi-dimensional tagging including asset type, business domain, language, etc.
-- **Graph-Based Relationships**: Define and traverse relationships between assets
-- **Concept Collections**: Organize assets into named collections
-- **Search & Discovery**: Full-text search and tag-based filtering
-- **Audit Logging**: Track all changes with user attribution
+- **Assets, relations, collections** — CRUD with soft deletes, a traversable relation
+  graph, and named collections
+- **Free-form tags** — `{category, value}` pairs with light validation; no fixed taxonomy
+- **Full-text search** — SQLite FTS5 with user input safely reduced to quoted phrases
+- **Multi-instance tenancy** — `X-Instance-Id` routing to per-instance SQLite files,
+  nested provisioning (workspace → agent/company leaves), instance tree listing
+- **Two storage backends** — MongoDB/DocumentDB (default) or SQLite for the root database
+- **OIDC auth + Cedar authorization** — JWT validation via a policy enforcement point
+  ([pep](https://crates.io/crates/pep)), Cedar policies enforced per request, audit log
+  with user attribution
+- **OpenAPI** — machine-readable spec at `/api/docs/openapi.json`
 
-## Quick Start
+## Quick start
 
-### Prerequisites
-
-- Rust 1.70+
-- DocumentDB/MongoDB instance
-
-### Configuration
-
-Create a `.env` file:
+Zero external dependencies with the SQLite root backend:
 
 ```bash
-# DocumentDB/MongoDB Storage Backend
-DOCUMENTDB_URL=mongodb://localhost:10260
-DOCUMENTDB_USERNAME=trustee
-DOCUMENTDB_PASSWORD=abk12345
+cargo run --features sqlite-backend --bin pdt
+# …or let it read a .env file (dotenvy is loaded automatically):
+cp env.example .env
+```
+
+Environment for the above:
+
+```bash
+PDT_DB_BACKEND=sqlite
+SQLITE_PATH=./pdt.db
+PDT_INSTANCES_DIR=./instances
+AUTH_ENABLED=false
+AUTH_DEV_MODE=true
+```
+
+To run against MongoDB/DocumentDB instead (the default build):
+
+```bash
+DOCUMENTDB_URL=mongodb://localhost:27017
+DOCUMENTDB_USERNAME=admin
+DOCUMENTDB_PASSWORD=change-me
 DOCUMENTDB_DATABASE=pdt
-DOCUMENTDB_TLS=true
-DOCUMENTDB_TLS_ALLOW_INVALID=true
+```
 
-# Server configuration (optional)
-PDT_HOST=0.0.0.0
-PDT_PORT=8080
+See `env.example` for the full set of variables.
 
-# Authentication (OIDC/OAuth2)
+## Multi-instance tenancy
+
+Every request may carry `X-Instance-Id`. With the header, all entity operations are routed
+to that instance's own SQLite database under `PDT_INSTANCES_DIR`; without it, they hit the
+root database (MongoDB/DocumentDB by default, SQLite with the `sqlite-backend` feature).
+
+```
+POST /api/instances/{id}/provision?parent={parent_id}   # create an instance DB (optionally nested)
+GET  /api/instances                                     # list instances found on disk
+GET  /api/instances/tree                                # list as a workspace tree
+DELETE /api/instances/{id}                              # delete an instance
+```
+
+Nested provisioning creates `{instances_dir}/{parent}/{id}/pdt.db`, which gives you
+workspace → agent/company hierarchies where each leaf is fully isolated: cross-instance
+reads simply don't resolve. Assets are born with an `auth_context`
+(visibility / owner groups / confidentiality) that Cedar policies evaluate.
+
+## Authentication and authorization
+
+Write endpoints (and sensitive reads) require `Authorization: Bearer <jwt>`. Tokens are
+validated against the configured OIDC issuer (JWKS signature, expiry, audience):
+
+```bash
 AUTH_ENABLED=true
-AUTH_ISSUER_URL=https://auth.example.com
+AUTH_ISSUER_URL=https://idp.example.com
 AUTH_AUDIENCE=pdt-api
-AUTH_DEV_MODE=false  # Set to true for local development only
+AUTH_USERINFO_URL=https://idp.example.com/userinfo   # optional claim enrichment
 ```
 
-See `env.example` for a complete template with all configuration options.
+Authorization is delegated to [Cedar](https://www.cedarpolicy.com/). Policies live in
+`policies/` (`rbac.cedar` + `schema.cedarschema`), are compiled into the binary, and the
+effective policy set is exposed at `GET /api/cedar/policies`.
 
-### Build and Run
+> ⚠️ **`AUTH_DEV_MODE=true` injects admin claims into any request that carries no bearer
+> token — including when `AUTH_ENABLED=true`.** Never enable it outside local development.
 
-```bash
-# Build
-cargo build --release
+## API surface
 
-# Run
-cargo run --release
 ```
+# Assets
+POST   /api/assets                          GET    /api/assets
+GET    /api/assets/{id}                     PUT    /api/assets/{id}
+DELETE /api/assets/{id}                     # soft delete
+POST   /api/assets/{id}/tags                DELETE /api/assets/{id}/tags/{tag_id}
+PUT    /api/assets/{id}/auth-context        # update auth context
+GET    /api/assets/{id}/relations           GET    /api/assets/{id}/graph
+GET    /api/assets/{id}/history
 
-## API Endpoints
+# Relations
+POST   /api/relations                       GET/DELETE /api/relations/{id}
 
-### Authentication
+# Collections
+POST   /api/collections                     GET    /api/collections
+GET/PUT/DELETE /api/collections/{id}
+POST   /api/collections/{id}/assets         DELETE /api/collections/{id}/assets/{asset_id}
 
-All write endpoints (`POST`, `PUT`, `DELETE`) and sensitive read endpoints require a valid Bearer token in the `Authorization` header:
+# Search & audit
+GET    /api/search?q=…                      GET    /api/audit
 
-```bash
-curl -H "Authorization: Bearer <your_jwt_token>" https://api.pdt.example.com/api/assets
+# Instances
+POST   /api/instances/{id}/provision        DELETE /api/instances/{id}
+GET    /api/instances                       GET    /api/instances/tree
+
+# Misc
+GET    /health                              GET    /api/cedar/policies
 ```
-
-The token must be a valid JWT issued by your configured OIDC provider with:
-- Valid signature verified using the OIDC provider's JWKS
-- Non-expired (current time before `exp` claim)
-- Matching `aud` (audience) claim equal to `AUTH_AUDIENCE` setting
-- Valid `sub` claim (subject/user ID)
-
-#### Development Mode
-
-For local development, you can bypass authentication by setting `AUTH_DEV_MODE=true` in your `.env` file. This injects a default "dev-user" identity for unauthenticated requests. **Never enable in production.**
-
-#### Example Request with Real Token
-
-```bash
-curl -X POST https://api.pdt.example.com/api/assets \
-  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..." \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "My Asset",
-    "content": "Asset content",
-    "tags": [{"category": "type", "value": "document"}]
-  }'
-```
-
-#### Error Response (401 Unauthorized)
-
-If the token is missing, invalid, or expired:
-
-```json
-{
-  "error": "Invalid token",
-  "details": "Token has expired"
-}
-```
-
-- `POST /api/assets` - Create asset
-- `GET /api/assets` - List assets
-- `GET /api/assets/:id` - Get asset by ID
-- `PUT /api/assets/:id` - Update asset
-- `DELETE /api/assets/:id` - Delete asset (soft delete)
-- `POST /api/assets/:id/tags` - Add tag to asset
-- `DELETE /api/assets/:id/tags/:tag_id` - Remove tag from asset
-
-### Relations
-
-- `POST /api/relations` - Create relation
-- `GET /api/relations/:id` - Get relation by ID
-- `DELETE /api/relations/:id` - Delete relation
-- `GET /api/assets/:id/relations` - Get all relations for an asset
-- `GET /api/assets/:id/graph` - Traverse relationship graph
-
-### Collections
-
-- `POST /api/collections` - Create collection
-- `GET /api/collections` - List collections
-- `GET /api/collections/:id` - Get collection by ID
-- `PUT /api/collections/:id` - Update collection
-- `DELETE /api/collections/:id` - Delete collection
-- `POST /api/collections/:id/assets` - Add asset to collection
-- `DELETE /api/collections/:id/assets/:asset_id` - Remove asset from collection
 
 ### Search
 
-- `GET /api/search?q=query&tags=category:value` - Search assets
+`GET /api/search?q=fame workspace` — queries are tokenized and each token is phrase-quoted
+before hitting FTS5, so user input can never be interpreted as FTS query syntax
+(column filters, boolean operators, etc.). Non-alphanumeric characters are preserved
+inside quoted phrases, making e.g. Persian text searchable.
 
-### Audit
+### Tags
 
-- `GET /api/audit` - List audit entries
-- `GET /api/assets/:id/history` - Get asset change history
+Tags are free-form `{category, value}` pairs — categories like `asset_type` are
+conventions, not enforced values. Validation: category/value are alphanumeric plus
+hyphens, underscores, and forward slashes, capped at 64 characters.
 
-### Health
+### Relation types
 
-- `GET /health` - Health check
+`contains`, `references`, `related_to`, `depends_on`, `supersedes`, `complements`,
+`has_instance`, `has_agent`
 
-## Tag Categories
+## Development
 
-Asset classification is entirely tag-based. There is no separate "asset type" field - asset types are handled through the tagging system for maximum flexibility.
+```bash
+cargo test                            # default (mongodb-backend) suite
+cargo test --features sqlite-backend  # sqlite root-backend suite
+```
 
-- `asset_type` - **Asset type** (document, concept, idea, data_entity, reference, or custom)
-- `business_domain` - Marketing, Finance, Legal, etc.
-- `language` - English, Farsi, etc.
-- `content_format` - markdown, structured data
-- `sensitivity_level` - public, internal, confidential
-- `source_system` - Origin system
-- `structural_type` - structured, semi-structured, unstructured
-- `target_user_type` - analysts, developers, executives
-- `quality_status` - draft, reviewed, approved
-- `custom` - Custom category with name
-
-### Common Asset Type Tag Values
-
-When creating assets, include an `asset_type` tag with one of these common values:
-- `document` - Markdown or structured content
-- `concept` - Business ideas, technical concepts
-- `idea` - Innovation proposals, project concepts
-- `data_entity` - Structured data objects
-- `reference` - External links, citations
-- Custom values as needed by your organization
-
-## Relation Types
-
-- `contains` - Asset includes other assets
-- `references` - Asset cites or links to another
-- `related_to` - General associations
-- `depends_on` - Required relationships
-- `supersedes` - Asset replaces another
-- `complements` - Assets enhance each other
+Two binaries are produced by the workspace; `--bin pdt` selects the server. The
+`sqlite-backend` feature gates only the **root** database repository — instance routing
+always uses SQLite, so `sqlx` is compiled in unconditionally.
 
 ## License
 
-MIT OR Apache-2.0
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
