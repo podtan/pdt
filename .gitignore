@@ -2,7 +2,7 @@
 .env
 .env.*
 *.log
--e pdt.db
+pdt.db
 pdt.db-shm
 pdt.db-wal
 *.db

@@ -1,10 +1,14 @@
 [package]
 name = "pdt"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
-description = "Platform Data Toolkit - Enterprise Knowledge Silo API Server"
+description = "Asset store API with relation graphs, tagging, full-text search, multi-instance SQLite tenancy, OIDC auth and Cedar authorization"
 license = "MIT OR Apache-2.0"
 authors = ["Podtan Team"]
+repository = "https://github.com/podtan/pdt"
+readme = "README.md"
+keywords = ["database", "api-server", "search", "cedar", "multi-tenant"]
+categories = ["database-implementations", "authentication", "web-programming::http-server"]
 
 [dependencies]
 # Web framework

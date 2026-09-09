@@ -45,9 +45,9 @@ if [ -z "${KANIDM_TOKEN_ENDPOINT:-}" ]; then
 fi
 
 # Derive issuer and userinfo URLs from the token endpoint
-# KANIDM_TOKEN_ENDPOINT = https://idm.tanbal.ir/oauth2/token
-# Issuer                 = https://idm.tanbal.ir/oauth2/openid/<audience>
-# Userinfo               = https://idm.tanbal.ir/oauth2/openid/<audience>/userinfo
+# KANIDM_TOKEN_ENDPOINT = https://idp.example.com/oauth2/token
+# Issuer                 = https://idp.example.com/oauth2/openid/<audience>
+# Userinfo               = https://idp.example.com/oauth2/openid/<audience>/userinfo
 IDM_BASE=$(echo "$KANIDM_TOKEN_ENDPOINT" | sed 's|/oauth2/token$||')
 ISSUER="${IDM_BASE}/oauth2/openid/${KANIDM_TOKEN_AUDIENCE}"
 USERINFO_URL="${ISSUER}/userinfo"

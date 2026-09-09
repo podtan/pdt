@@ -17,11 +17,11 @@ if [ -f ".env" ] && [ -z "$AUTH_ISSUER_URL" ]; then
   set +a
 fi
 
-# Required: OIDC issuer URL (e.g. https://idm.tanbal.ir/oauth2/openid/pdt-api)
+# Required: OIDC issuer URL (e.g. https://idp.example.com/oauth2/openid/pdt-api)
 ISSUER_URL="${AUTH_ISSUER_URL:?AUTH_ISSUER_URL is not set. Source .env or export it.}"
 
 # Derive the base TIDP URL and token endpoint from the issuer
-# AUTH_ISSUER_URL = https://idm.tanbal.ir/oauth2/openid/pdt-api
+# AUTH_ISSUER_URL = https://idp.example.com/oauth2/openid/pdt-api
 # We strip the /oauth2/openid/pdt-api part to get the TIDP base
 TIDP_BASE=$(echo "$ISSUER_URL" | sed 's|/oauth2/openid/.*$||')
 TOKEN_ENDPOINT="${TIDP_BASE}/oauth2/token"
