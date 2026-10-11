@@ -185,12 +185,15 @@ impl TenantPoolManager {
     }
 
     /// Create a new SQLite pool for an instance and build Services from it.
-    async fn open_instance_services(&self, instance_id: &str, db_path: &PathBuf) -> Result<Services> {
+    async fn open_instance_services(
+        &self,
+        instance_id: &str,
+        db_path: &PathBuf,
+    ) -> Result<Services> {
         // Ensure directory exists
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("Failed to create instance directory: {:?}", parent)
-            })?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create instance directory: {:?}", parent))?;
         }
 
         info!("Instance SQLite path: {:?}", db_path);
@@ -249,7 +252,11 @@ impl TenantPoolManager {
     ///
     /// Called by TOCPI during provisioning to ensure the database exists
     /// before seeding data via the facade APIs.
-    pub async fn provision_instance(&self, instance_id: &str, parent_id: Option<&str>) -> Result<()> {
+    pub async fn provision_instance(
+        &self,
+        instance_id: &str,
+        parent_id: Option<&str>,
+    ) -> Result<()> {
         validate_uuid(instance_id)?;
         if let Some(parent) = parent_id {
             validate_uuid(parent)?;
@@ -266,19 +273,27 @@ impl TenantPoolManager {
                         parent_db
                     );
                 }
-                self.instances_dir.join(parent).join(instance_id).join("pdt.db")
+                self.instances_dir
+                    .join(parent)
+                    .join(instance_id)
+                    .join("pdt.db")
             }
         };
 
         if db_path.exists() {
             // Already provisioned — idempotent
-            info!("Instance {} already provisioned at {:?}", instance_id, db_path);
+            info!(
+                "Instance {} already provisioned at {:?}",
+                instance_id, db_path
+            );
             return Ok(());
         }
 
         self.open_instance_services(instance_id, &db_path).await?;
-        info!("Instance {} provisioned under parent {:?} at {:?}",
-              instance_id, parent_id, db_path);
+        info!(
+            "Instance {} provisioned under parent {:?} at {:?}",
+            instance_id, parent_id, db_path
+        );
         Ok(())
     }
 
@@ -344,11 +359,13 @@ impl TenantPoolManager {
             }
         }
 
-        std::fs::remove_dir_all(&target_dir).with_context(|| {
-            format!("Failed to delete instance directory {:?}", target_dir)
-        })?;
+        std::fs::remove_dir_all(&target_dir)
+            .with_context(|| format!("Failed to delete instance directory {:?}", target_dir))?;
 
-        info!("Instance {} deleted (recursive): {:?}", instance_id, target_dir);
+        info!(
+            "Instance {} deleted (recursive): {:?}",
+            instance_id, target_dir
+        );
         Ok(())
     }
 
@@ -450,8 +467,8 @@ mod tests {
         use super::super::*;
 
         async fn manager_with_dir() -> TenantPoolManager {
-            let dir = std::env::temp_dir()
-                .join(format!("pdt_tenant_test_{}", uuid::Uuid::new_v4()));
+            let dir =
+                std::env::temp_dir().join(format!("pdt_tenant_test_{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
 
             // Build real global services on an in-memory SQLite so the manager
@@ -492,7 +509,12 @@ mod tests {
             let child = uuid::Uuid::new_v4().to_string();
             mgr.provision_instance(&ws, None).await.unwrap();
             mgr.provision_instance(&child, Some(&ws)).await.unwrap();
-            assert!(mgr.instances_dir.join(&ws).join(&child).join("pdt.db").exists());
+            assert!(mgr
+                .instances_dir
+                .join(&ws)
+                .join(&child)
+                .join("pdt.db")
+                .exists());
         }
 
         #[tokio::test]
@@ -517,7 +539,10 @@ mod tests {
         async fn provisioning_rejects_traversal() {
             let mgr = manager_with_dir().await;
             assert!(mgr.provision_instance("../evil", None).await.is_err());
-            assert!(mgr.provision_instance("evil", Some("../parent")).await.is_err());
+            assert!(mgr
+                .provision_instance("evil", Some("../parent"))
+                .await
+                .is_err());
         }
 
         #[tokio::test]

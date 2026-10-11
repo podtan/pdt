@@ -7,7 +7,9 @@ use uuid::Uuid;
 
 use crate::db::Database;
 use crate::error::{ApiError, Result};
-use crate::models::{AddTagRequest, Asset, AuthContext, CreateAssetRequest, Tag, UpdateAssetRequest};
+use crate::models::{
+    AddTagRequest, Asset, AuthContext, CreateAssetRequest, Tag, UpdateAssetRequest,
+};
 use crate::repository::traits::AssetRepository;
 
 /// MongoDB-backed asset repository
@@ -50,7 +52,9 @@ impl AssetRepository for MongoAssetRepository {
             created_by: user_id.to_string(),
             updated_by: user_id.to_string(),
             deleted_at: None,
-            auth_context: request.auth_context.or_else(|| Some(AuthContext::default())),
+            auth_context: request
+                .auth_context
+                .or_else(|| Some(AuthContext::default())),
         };
 
         self.db.assets().insert_one(&asset).await?;
@@ -71,12 +75,7 @@ impl AssetRepository for MongoAssetRepository {
             .ok_or_else(|| ApiError::NotFound(format!("Asset not found: {}", id)))
     }
 
-    async fn update(
-        &self,
-        id: &str,
-        request: UpdateAssetRequest,
-        user_id: &str,
-    ) -> Result<Asset> {
+    async fn update(&self, id: &str, request: UpdateAssetRequest, user_id: &str) -> Result<Asset> {
         let mut update_doc = doc! {
             "$set": {
                 "updated_at": Utc::now(),
@@ -308,7 +307,9 @@ impl AssetRepository for MongoAssetRepository {
 
         let next_cursor = if assets.len() > limit as usize {
             assets.pop();
-            assets.last().map(|a| format!("{}|{}", a.updated_at.to_rfc3339(), a.id))
+            assets
+                .last()
+                .map(|a| format!("{}|{}", a.updated_at.to_rfc3339(), a.id))
         } else {
             None
         };
@@ -316,12 +317,7 @@ impl AssetRepository for MongoAssetRepository {
         Ok((assets, next_cursor))
     }
 
-    async fn add_tag(
-        &self,
-        asset_id: &str,
-        request: AddTagRequest,
-        user_id: &str,
-    ) -> Result<Tag> {
+    async fn add_tag(&self, asset_id: &str, request: AddTagRequest, user_id: &str) -> Result<Tag> {
         // Verify asset exists
         self.get_by_id(asset_id).await?;
 
@@ -366,11 +362,7 @@ impl AssetRepository for MongoAssetRepository {
         Ok(count > 0)
     }
 
-    async fn update_auth_context(
-        &self,
-        id: &str,
-        auth_context: &AuthContext,
-    ) -> Result<Asset> {
+    async fn update_auth_context(&self, id: &str, auth_context: &AuthContext) -> Result<Asset> {
         let filter = doc! {
             "_id": id,
             "deleted_at": { "$exists": false }

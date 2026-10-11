@@ -22,10 +22,7 @@ impl SqliteAssetRepository {
     }
 
     /// Hydrate an Asset from the base row + tags + metadata.
-    async fn hydrate_asset(
-        &self,
-        row: &AssetRow,
-    ) -> Result<Asset> {
+    async fn hydrate_asset(&self, row: &AssetRow) -> Result<Asset> {
         // Load tags
         let tag_rows: Vec<TagRow> = sqlx::query_as::<_, TagRow>(
             "SELECT id, category, value, added_by, added_at FROM tags WHERE asset_id = ?",
@@ -55,11 +52,7 @@ impl SqliteAssetRepository {
 
         let metadata: HashMap<String, serde_json::Value> = meta_rows
             .into_iter()
-            .filter_map(|m| {
-                serde_json::from_str(&m.value_json)
-                    .ok()
-                    .map(|v| (m.key, v))
-            })
+            .filter_map(|m| serde_json::from_str(&m.value_json).ok().map(|v| (m.key, v)))
             .collect();
 
         // Build auth_context from flattened columns
@@ -128,7 +121,9 @@ impl AssetRepository for SqliteAssetRepository {
     async fn create(&self, request: CreateAssetRequest, user_id: &str) -> Result<Asset> {
         let now = Utc::now();
         let id = Uuid::new_v4().to_string();
-        let auth_ctx = request.auth_context.or_else(|| Some(AuthContext::default()));
+        let auth_ctx = request
+            .auth_context
+            .or_else(|| Some(AuthContext::default()));
 
         // Insert asset row
         sqlx::query(
@@ -167,14 +162,12 @@ impl AssetRepository for SqliteAssetRepository {
         // Insert metadata
         for (key, value) in &request.metadata {
             let value_json = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
-            sqlx::query(
-                "INSERT INTO asset_metadata (asset_id, key, value_json) VALUES (?, ?, ?)",
-            )
-            .bind(&id)
-            .bind(key)
-            .bind(&value_json)
-            .execute(&self.pool)
-            .await?;
+            sqlx::query("INSERT INTO asset_metadata (asset_id, key, value_json) VALUES (?, ?, ?)")
+                .bind(&id)
+                .bind(key)
+                .bind(&value_json)
+                .execute(&self.pool)
+                .await?;
         }
 
         // Re-fetch the created asset
@@ -195,12 +188,7 @@ impl AssetRepository for SqliteAssetRepository {
         self.hydrate_asset(&row).await
     }
 
-    async fn update(
-        &self,
-        id: &str,
-        request: UpdateAssetRequest,
-        user_id: &str,
-    ) -> Result<Asset> {
+    async fn update(&self, id: &str, request: UpdateAssetRequest, user_id: &str) -> Result<Asset> {
         let now = Utc::now().to_rfc3339();
 
         // Verify exists and not deleted
@@ -238,13 +226,16 @@ impl AssetRepository for SqliteAssetRepository {
 
             // Insert new metadata
             for (key, value) in metadata {
-                let value_json = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
-                sqlx::query("INSERT INTO asset_metadata (asset_id, key, value_json) VALUES (?, ?, ?)")
-                    .bind(id)
-                    .bind(key)
-                    .bind(&value_json)
-                    .execute(&self.pool)
-                    .await?;
+                let value_json =
+                    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+                sqlx::query(
+                    "INSERT INTO asset_metadata (asset_id, key, value_json) VALUES (?, ?, ?)",
+                )
+                .bind(id)
+                .bind(key)
+                .bind(&value_json)
+                .execute(&self.pool)
+                .await?;
             }
 
             sqlx::query("UPDATE assets SET updated_at = ?, updated_by = ? WHERE id = ? AND deleted_at IS NULL")
@@ -270,11 +261,12 @@ impl AssetRepository for SqliteAssetRepository {
 
     async fn soft_delete(&self, id: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        let result = sqlx::query("UPDATE assets SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL")
-            .bind(&now)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        let result =
+            sqlx::query("UPDATE assets SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL")
+                .bind(&now)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
 
         if result.rows_affected() == 0 {
             return Err(ApiError::NotFound(format!("Asset not found: {}", id)));
@@ -422,9 +414,7 @@ impl AssetRepository for SqliteAssetRepository {
         // Cursor
         if let Some(c) = cursor {
             if let Some((date_str, id_part)) = c.split_once('|') {
-                query_str.push_str(
-                    " AND (a.updated_at < ? OR (a.updated_at = ? AND a.id < ?))",
-                );
+                query_str.push_str(" AND (a.updated_at < ? OR (a.updated_at = ? AND a.id < ?))");
                 let _ = (date_str, id_part);
             } else {
                 query_str.push_str(" AND a.id < ?");
@@ -457,9 +447,9 @@ impl AssetRepository for SqliteAssetRepository {
 
         let next_cursor = if assets.len() > limit as usize {
             let trimmed = &assets[..limit as usize];
-            trimmed.last().map(|a| {
-                format!("{}|{}", a.updated_at.to_rfc3339(), a.id)
-            })
+            trimmed
+                .last()
+                .map(|a| format!("{}|{}", a.updated_at.to_rfc3339(), a.id))
         } else {
             None
         };
@@ -473,12 +463,7 @@ impl AssetRepository for SqliteAssetRepository {
         Ok((assets, next_cursor))
     }
 
-    async fn add_tag(
-        &self,
-        asset_id: &str,
-        request: AddTagRequest,
-        user_id: &str,
-    ) -> Result<Tag> {
+    async fn add_tag(&self, asset_id: &str, request: AddTagRequest, user_id: &str) -> Result<Tag> {
         // Verify asset exists
         self.get_by_id(asset_id).await?;
 
@@ -541,11 +526,7 @@ impl AssetRepository for SqliteAssetRepository {
         Ok(row.0 > 0)
     }
 
-    async fn update_auth_context(
-        &self,
-        id: &str,
-        auth_context: &AuthContext,
-    ) -> Result<Asset> {
+    async fn update_auth_context(&self, id: &str, auth_context: &AuthContext) -> Result<Asset> {
         let result = sqlx::query(
             "UPDATE assets SET visibility = ?, confidentiality = ?, owner_groups = ?, updated_at = ?
              WHERE id = ? AND deleted_at IS NULL",

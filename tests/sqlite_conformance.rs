@@ -323,17 +323,29 @@ async fn sqlite_search_still_finds_assets_through_sanitized_phrases() {
         .await
         .unwrap();
     assets
-        .create(common::make_asset_request("Unrelated", "nothing here"), "user1")
+        .create(
+            common::make_asset_request("Unrelated", "nothing here"),
+            "user1",
+        )
         .await
         .unwrap();
 
     // Single tokens, multi-word queries, and unicode all keep matching.
-    for q in ["integration", "Integration Probe", "dispatch wiring", "بانک"] {
+    for q in [
+        "integration",
+        "Integration Probe",
+        "dispatch wiring",
+        "بانک",
+    ] {
         let (res, _) = assets
             .search(Some(q), vec![], 10, None)
             .await
             .unwrap_or_else(|e| panic!("search {:?} must not fail: {}", q, e));
-        assert!(!res.is_empty(), "query {:?} should find the seeded asset", q);
+        assert!(
+            !res.is_empty(),
+            "query {:?} should find the seeded asset",
+            q
+        );
     }
 
     let (res, _) = assets

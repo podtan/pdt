@@ -22,17 +22,22 @@ impl CollectionService {
         }
 
         // Create collection
-        let collection = services.collections().create(request.clone(), user_id).await?;
+        let collection = services
+            .collections()
+            .create(request.clone(), user_id)
+            .await?;
 
         // Create audit entry
-        services.audit().create(
-            "collection",
-            &collection.id,
-            AuditAction::Create,
-            json!({ "name": collection.name }),
-            user_id,
-        )
-        .await?;
+        services
+            .audit()
+            .create(
+                "collection",
+                &collection.id,
+                AuditAction::Create,
+                json!({ "name": collection.name }),
+                user_id,
+            )
+            .await?;
 
         Ok(collection)
     }
@@ -60,26 +65,31 @@ impl CollectionService {
         let old_collection = services.collections().get_by_id(id).await?;
 
         // Update collection
-        let collection = services.collections().update(id, request.clone(), user_id).await?;
+        let collection = services
+            .collections()
+            .update(id, request.clone(), user_id)
+            .await?;
 
         // Create audit entry
-        services.audit().create(
-            "collection",
-            id,
-            AuditAction::Update,
-            json!({
-                "old": {
-                    "name": old_collection.name,
-                    "description": old_collection.description,
-                },
-                "new": {
-                    "name": request.name,
-                    "description": request.description,
-                }
-            }),
-            user_id,
-        )
-        .await?;
+        services
+            .audit()
+            .create(
+                "collection",
+                id,
+                AuditAction::Update,
+                json!({
+                    "old": {
+                        "name": old_collection.name,
+                        "description": old_collection.description,
+                    },
+                    "new": {
+                        "name": request.name,
+                        "description": request.description,
+                    }
+                }),
+                user_id,
+            )
+            .await?;
 
         Ok(collection)
     }
@@ -93,14 +103,10 @@ impl CollectionService {
         services.collections().delete(id).await?;
 
         // Create audit entry
-        services.audit().create(
-            "collection",
-            id,
-            AuditAction::Delete,
-            json!({}),
-            user_id,
-        )
-        .await?;
+        services
+            .audit()
+            .create("collection", id, AuditAction::Delete, json!({}), user_id)
+            .await?;
 
         Ok(())
     }
@@ -125,17 +131,22 @@ impl CollectionService {
         services.assets().get_by_id(asset_id).await?;
 
         // Add asset to collection
-        services.collections().add_asset(collection_id, asset_id).await?;
+        services
+            .collections()
+            .add_asset(collection_id, asset_id)
+            .await?;
 
         // Create audit entry
-        services.audit().create(
-            "collection",
-            collection_id,
-            AuditAction::AddToCollection,
-            json!({ "asset_id": asset_id }),
-            user_id,
-        )
-        .await?;
+        services
+            .audit()
+            .create(
+                "collection",
+                collection_id,
+                AuditAction::AddToCollection,
+                json!({ "asset_id": asset_id }),
+                user_id,
+            )
+            .await?;
 
         Ok(())
     }
@@ -148,17 +159,22 @@ impl CollectionService {
         user_id: &str,
     ) -> Result<()> {
         // Remove asset from collection
-        services.collections().remove_asset(collection_id, asset_id).await?;
+        services
+            .collections()
+            .remove_asset(collection_id, asset_id)
+            .await?;
 
         // Create audit entry
-        services.audit().create(
-            "collection",
-            collection_id,
-            AuditAction::RemoveFromCollection,
-            json!({ "asset_id": asset_id }),
-            user_id,
-        )
-        .await?;
+        services
+            .audit()
+            .create(
+                "collection",
+                collection_id,
+                AuditAction::RemoveFromCollection,
+                json!({ "asset_id": asset_id }),
+                user_id,
+            )
+            .await?;
 
         Ok(())
     }

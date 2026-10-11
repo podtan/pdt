@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 use std::collections::HashMap;
+use utoipa::ToSchema;
 
 use super::auth_context::AuthContext;
 use super::datetime_format;
@@ -146,6 +146,9 @@ pub fn generate_snippet(content: &str, max_length: usize) -> Option<String> {
     let truncated = &text[..end];
     Some(format!(
         "{}...",
-        truncated.rsplit_once(' ').map(|(w, _)| w).unwrap_or(truncated)
+        truncated
+            .rsplit_once(' ')
+            .map(|(w, _)| w)
+            .unwrap_or(truncated)
     ))
 }

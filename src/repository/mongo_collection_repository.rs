@@ -23,11 +23,7 @@ impl MongoCollectionRepository {
 
 #[async_trait::async_trait]
 impl CollectionRepository for MongoCollectionRepository {
-    async fn create(
-        &self,
-        request: CreateCollectionRequest,
-        user_id: &str,
-    ) -> Result<Collection> {
+    async fn create(&self, request: CreateCollectionRequest, user_id: &str) -> Result<Collection> {
         let now = Utc::now();
         let id = Uuid::new_v4().to_string();
 
@@ -134,7 +130,12 @@ impl CollectionRepository for MongoCollectionRepository {
             .limit(limit + 1)
             .build();
 
-        let mut cursor = self.db.collections().find(filter).with_options(options).await?;
+        let mut cursor = self
+            .db
+            .collections()
+            .find(filter)
+            .with_options(options)
+            .await?;
         let mut collections = Vec::new();
 
         while let Some(collection) = cursor.try_next().await? {

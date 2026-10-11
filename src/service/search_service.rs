@@ -16,6 +16,9 @@ impl SearchService {
         limit: i64,
         cursor: Option<&str>,
     ) -> Result<(Vec<Asset>, Option<String>)> {
-        services.assets().search(query, tag_filters, limit, cursor).await
+        services
+            .assets()
+            .search(query, tag_filters, limit, cursor)
+            .await
     }
 }

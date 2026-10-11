@@ -4,8 +4,8 @@ use serde_json::json;
 
 use crate::error::{ApiError, Result};
 use crate::models::{
-    AddTagRequest, Asset, AuditAction, CreateAssetRequest, Tag,
-    UpdateAssetRequest, UpdateAuthContextRequest,
+    AddTagRequest, Asset, AuditAction, CreateAssetRequest, Tag, UpdateAssetRequest,
+    UpdateAuthContextRequest,
 };
 use crate::service::Services;
 
@@ -28,17 +28,19 @@ impl AssetService {
         let asset = services.assets().create(request.clone(), user_id).await?;
 
         // Create audit entry
-        services.audit().create(
-            "asset",
-            &asset.id,
-            AuditAction::Create,
-            json!({
-                "title": asset.title,
-                "tags": asset.tags.len(),
-            }),
-            user_id,
-        )
-        .await?;
+        services
+            .audit()
+            .create(
+                "asset",
+                &asset.id,
+                AuditAction::Create,
+                json!({
+                    "title": asset.title,
+                    "tags": asset.tags.len(),
+                }),
+                user_id,
+            )
+            .await?;
 
         Ok(asset)
     }
@@ -66,26 +68,31 @@ impl AssetService {
         let old_asset = services.assets().get_by_id(id).await?;
 
         // Update asset
-        let asset = services.assets().update(id, request.clone(), user_id).await?;
+        let asset = services
+            .assets()
+            .update(id, request.clone(), user_id)
+            .await?;
 
         // Create audit entry
-        services.audit().create(
-            "asset",
-            id,
-            AuditAction::Update,
-            json!({
-                "old": {
-                    "title": old_asset.title,
-                    "content": old_asset.content,
-                },
-                "new": {
-                    "title": request.title,
-                    "content": request.content,
-                }
-            }),
-            user_id,
-        )
-        .await?;
+        services
+            .audit()
+            .create(
+                "asset",
+                id,
+                AuditAction::Update,
+                json!({
+                    "old": {
+                        "title": old_asset.title,
+                        "content": old_asset.content,
+                    },
+                    "new": {
+                        "title": request.title,
+                        "content": request.content,
+                    }
+                }),
+                user_id,
+            )
+            .await?;
 
         Ok(asset)
     }
@@ -105,7 +112,10 @@ impl AssetService {
         services.collections().remove_asset_from_all(id).await?;
 
         // Create audit entry
-        services.audit().create("asset", id, AuditAction::Delete, json!({}), user_id).await?;
+        services
+            .audit()
+            .create("asset", id, AuditAction::Delete, json!({}), user_id)
+            .await?;
 
         Ok(())
     }
@@ -120,7 +130,10 @@ impl AssetService {
         sort_by: &str,
         order: &str,
     ) -> Result<(Vec<Asset>, Option<String>)> {
-        services.assets().list(limit, cursor, asset_type_tag, sort_by, order).await
+        services
+            .assets()
+            .list(limit, cursor, asset_type_tag, sort_by, order)
+            .await
     }
 
     /// Add a tag to an asset
@@ -133,21 +146,26 @@ impl AssetService {
         // Validate the tag request
         request.validate().map_err(ApiError::Validation)?;
 
-        let tag = services.assets().add_tag(asset_id, request.clone(), user_id).await?;
+        let tag = services
+            .assets()
+            .add_tag(asset_id, request.clone(), user_id)
+            .await?;
 
         // Create audit entry
-        services.audit().create(
-            "asset",
-            asset_id,
-            AuditAction::AddTag,
-            json!({
-                "tag_id": tag.id,
-                "category": &tag.category,
-                "value": &tag.value,
-            }),
-            user_id,
-        )
-        .await?;
+        services
+            .audit()
+            .create(
+                "asset",
+                asset_id,
+                AuditAction::AddTag,
+                json!({
+                    "tag_id": tag.id,
+                    "category": &tag.category,
+                    "value": &tag.value,
+                }),
+                user_id,
+            )
+            .await?;
 
         Ok(tag)
     }
@@ -162,14 +180,16 @@ impl AssetService {
         services.assets().remove_tag(asset_id, tag_id).await?;
 
         // Create audit entry
-        services.audit().create(
-            "asset",
-            asset_id,
-            AuditAction::RemoveTag,
-            json!({ "tag_id": tag_id }),
-            user_id,
-        )
-        .await?;
+        services
+            .audit()
+            .create(
+                "asset",
+                asset_id,
+                AuditAction::RemoveTag,
+                json!({ "tag_id": tag_id }),
+                user_id,
+            )
+            .await?;
 
         Ok(())
     }
@@ -216,7 +236,10 @@ impl AssetService {
                     if request.confidentiality.is_some() {
                         child_ctx.confidentiality = ctx.confidentiality.clone();
                     }
-                    let _ = services.assets().update_auth_context(child_id, &child_ctx).await;
+                    let _ = services
+                        .assets()
+                        .update_auth_context(child_id, &child_ctx)
+                        .await;
                 }
             }
             count
@@ -225,19 +248,21 @@ impl AssetService {
         };
 
         // Audit
-        services.audit().create(
-            "asset",
-            id,
-            AuditAction::Update,
-            json!({
-                "action": "update_auth_context",
-                "auth_context": &ctx,
-                "cascade": request.cascade,
-                "cascaded_count": cascaded_count,
-            }),
-            user_id,
-        )
-        .await?;
+        services
+            .audit()
+            .create(
+                "asset",
+                id,
+                AuditAction::Update,
+                json!({
+                    "action": "update_auth_context",
+                    "auth_context": &ctx,
+                    "cascade": request.cascade,
+                    "cascaded_count": cascaded_count,
+                }),
+                user_id,
+            )
+            .await?;
 
         Ok(updated)
     }

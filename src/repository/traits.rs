@@ -5,9 +5,9 @@
 
 use crate::error::Result;
 use crate::models::{
-    AddTagRequest, Asset, AuditAction, AuditEntry, AuthContext, Collection,
-    CreateAssetRequest, CreateCollectionRequest, CreateRelationRequest, Relation,
-    UpdateAssetRequest, UpdateCollectionRequest,
+    AddTagRequest, Asset, AuditAction, AuditEntry, AuthContext, Collection, CreateAssetRequest,
+    CreateCollectionRequest, CreateRelationRequest, Relation, UpdateAssetRequest,
+    UpdateCollectionRequest,
 };
 use async_trait::async_trait;
 
@@ -21,12 +21,7 @@ pub trait AssetRepository: Send + Sync {
     async fn get_by_id(&self, id: &str) -> Result<Asset>;
 
     /// Update an asset's mutable fields.
-    async fn update(
-        &self,
-        id: &str,
-        request: UpdateAssetRequest,
-        user_id: &str,
-    ) -> Result<Asset>;
+    async fn update(&self, id: &str, request: UpdateAssetRequest, user_id: &str) -> Result<Asset>;
 
     /// Soft delete an asset.
     async fn soft_delete(&self, id: &str) -> Result<()>;
@@ -65,22 +60,14 @@ pub trait AssetRepository: Send + Sync {
     async fn exists(&self, id: &str) -> Result<bool>;
 
     /// Update the auth_context of an asset.
-    async fn update_auth_context(
-        &self,
-        id: &str,
-        auth_context: &AuthContext,
-    ) -> Result<Asset>;
+    async fn update_auth_context(&self, id: &str, auth_context: &AuthContext) -> Result<Asset>;
 }
 
 /// Repository for relation operations.
 #[async_trait]
 pub trait RelationRepository: Send + Sync {
     /// Create a new relation.
-    async fn create(
-        &self,
-        request: CreateRelationRequest,
-        user_id: &str,
-    ) -> Result<Relation>;
+    async fn create(&self, request: CreateRelationRequest, user_id: &str) -> Result<Relation>;
 
     /// Get relation by ID.
     async fn get_by_id(&self, id: &str) -> Result<Relation>;
@@ -113,11 +100,7 @@ pub trait RelationRepository: Send + Sync {
 #[async_trait]
 pub trait CollectionRepository: Send + Sync {
     /// Create a new collection.
-    async fn create(
-        &self,
-        request: CreateCollectionRequest,
-        user_id: &str,
-    ) -> Result<Collection>;
+    async fn create(&self, request: CreateCollectionRequest, user_id: &str) -> Result<Collection>;
 
     /// Get collection by ID.
     async fn get_by_id(&self, id: &str) -> Result<Collection>;

@@ -82,10 +82,7 @@ pub async fn create_relation(
     ),
     tag = "relations",
 )]
-pub async fn get_relation(
-    tx: TenantState,
-    Path(id): Path<String>,
-) -> Result<Json<Relation>> {
+pub async fn get_relation(tx: TenantState, Path(id): Path<String>) -> Result<Json<Relation>> {
     let relation = RelationService::get(tx.services(), &id).await?;
     Ok(Json(relation))
 }

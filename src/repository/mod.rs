@@ -10,11 +10,11 @@ mod mongo_audit_repository;
 mod mongo_collection_repository;
 mod mongo_relation_repository;
 
-pub use traits::{AssetRepository, AuditRepository, CollectionRepository, RelationRepository};
 pub use mongo_asset_repository::MongoAssetRepository;
 pub use mongo_audit_repository::MongoAuditRepository;
 pub use mongo_collection_repository::MongoCollectionRepository;
 pub use mongo_relation_repository::MongoRelationRepository;
+pub use traits::{AssetRepository, AuditRepository, CollectionRepository, RelationRepository};
 
 // SQLite repositories are UNCONDITIONALLY compiled: sqlx is non-optional and
 // tenant.rs instantiates these for every instance leaf regardless of which

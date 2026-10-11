@@ -51,21 +51,26 @@ impl RelationService {
         }
 
         // Create relation
-        let relation = services.relations().create(request.clone(), user_id).await?;
+        let relation = services
+            .relations()
+            .create(request.clone(), user_id)
+            .await?;
 
         // Create audit entry
-        services.audit().create(
-            "relation",
-            &relation.id,
-            AuditAction::Create,
-            json!({
-                "from_asset_id": relation.from_asset_id,
-                "to_asset_id": relation.to_asset_id,
-                "relation_type": format!("{}", relation.relation_type),
-            }),
-            user_id,
-        )
-        .await?;
+        services
+            .audit()
+            .create(
+                "relation",
+                &relation.id,
+                AuditAction::Create,
+                json!({
+                    "from_asset_id": relation.from_asset_id,
+                    "to_asset_id": relation.to_asset_id,
+                    "relation_type": format!("{}", relation.relation_type),
+                }),
+                user_id,
+            )
+            .await?;
 
         Ok(relation)
     }
@@ -84,18 +89,20 @@ impl RelationService {
         services.relations().delete(id).await?;
 
         // Create audit entry
-        services.audit().create(
-            "relation",
-            id,
-            AuditAction::RemoveRelation,
-            json!({
-                "from_asset_id": relation.from_asset_id,
-                "to_asset_id": relation.to_asset_id,
-                "relation_type": format!("{}", relation.relation_type),
-            }),
-            user_id,
-        )
-        .await?;
+        services
+            .audit()
+            .create(
+                "relation",
+                id,
+                AuditAction::RemoveRelation,
+                json!({
+                    "from_asset_id": relation.from_asset_id,
+                    "to_asset_id": relation.to_asset_id,
+                    "relation_type": format!("{}", relation.relation_type),
+                }),
+                user_id,
+            )
+            .await?;
 
         Ok(())
     }
@@ -117,7 +124,10 @@ impl RelationService {
         // Verify asset exists
         services.assets().get_by_id(asset_id).await?;
 
-        let traversal = services.relations().traverse_graph(asset_id, max_depth).await?;
+        let traversal = services
+            .relations()
+            .traverse_graph(asset_id, max_depth)
+            .await?;
 
         let nodes = traversal
             .into_iter()

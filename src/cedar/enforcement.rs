@@ -239,17 +239,14 @@ pub fn evaluate_permission(
     let asset_entity = crate::cedar::entity::asset_to_cedar_entity(asset);
     let principal_entity = crate::cedar::entity::user_to_cedar_principal(claims);
 
-    let entities = Entities::from_entities(
-        [asset_entity, principal_entity],
-        None,
-    )
-    .map_err(|e| {
-        tracing::warn!("Cedar entities build failed: {}", e);
-        ApiError::Forbidden(format!("Authorization error: {}", e))
-    })?;
+    let entities =
+        Entities::from_entities([asset_entity, principal_entity], None).map_err(|e| {
+            tracing::warn!("Cedar entities build failed: {}", e);
+            ApiError::Forbidden(format!("Authorization error: {}", e))
+        })?;
 
-    let request = Request::new(principal, action_uid, resource, Context::empty(), None)
-        .map_err(|e| {
+    let request =
+        Request::new(principal, action_uid, resource, Context::empty(), None).map_err(|e| {
             tracing::warn!("Cedar request build failed: {}", e);
             ApiError::Forbidden(format!("Authorization error: {}", e))
         })?;

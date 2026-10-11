@@ -68,11 +68,7 @@ impl SqliteCollectionRepository {
 
 #[async_trait::async_trait]
 impl CollectionRepository for SqliteCollectionRepository {
-    async fn create(
-        &self,
-        request: CreateCollectionRequest,
-        user_id: &str,
-    ) -> Result<Collection> {
+    async fn create(&self, request: CreateCollectionRequest, user_id: &str) -> Result<Collection> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
@@ -144,13 +140,15 @@ impl CollectionRepository for SqliteCollectionRepository {
         let _existing = self.get_by_id(id).await?;
 
         if let Some(ref name) = request.name {
-            sqlx::query("UPDATE collections SET name = ?, updated_at = ?, updated_by = ? WHERE id = ?")
-                .bind(name)
-                .bind(&now)
-                .bind(user_id)
-                .bind(id)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query(
+                "UPDATE collections SET name = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+            )
+            .bind(name)
+            .bind(&now)
+            .bind(user_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         }
 
         if let Some(ref description) = request.description {
@@ -230,11 +228,10 @@ impl CollectionRepository for SqliteCollectionRepository {
 
     async fn add_asset(&self, collection_id: &str, asset_id: &str) -> Result<()> {
         // Verify collection exists
-        let exists: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM collections WHERE id = ?")
-                .bind(collection_id)
-                .fetch_one(&self.pool)
-                .await?;
+        let exists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM collections WHERE id = ?")
+            .bind(collection_id)
+            .fetch_one(&self.pool)
+            .await?;
 
         if exists.0 == 0 {
             return Err(ApiError::NotFound(format!(
@@ -243,11 +240,13 @@ impl CollectionRepository for SqliteCollectionRepository {
             )));
         }
 
-        sqlx::query("INSERT OR IGNORE INTO collection_assets (collection_id, asset_id) VALUES (?, ?)")
-            .bind(collection_id)
-            .bind(asset_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO collection_assets (collection_id, asset_id) VALUES (?, ?)",
+        )
+        .bind(collection_id)
+        .bind(asset_id)
+        .execute(&self.pool)
+        .await?;
 
         sqlx::query("UPDATE collections SET updated_at = ? WHERE id = ?")
             .bind(Utc::now().to_rfc3339())
@@ -259,19 +258,19 @@ impl CollectionRepository for SqliteCollectionRepository {
     }
 
     async fn remove_asset(&self, collection_id: &str, asset_id: &str) -> Result<()> {
-        let result = sqlx::query("DELETE FROM collection_assets WHERE collection_id = ? AND asset_id = ?")
-            .bind(collection_id)
-            .bind(asset_id)
-            .execute(&self.pool)
-            .await?;
+        let result =
+            sqlx::query("DELETE FROM collection_assets WHERE collection_id = ? AND asset_id = ?")
+                .bind(collection_id)
+                .bind(asset_id)
+                .execute(&self.pool)
+                .await?;
 
         // Verify collection exists (even if no rows were deleted)
         if result.rows_affected() == 0 {
-            let exists: (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM collections WHERE id = ?")
-                    .bind(collection_id)
-                    .fetch_one(&self.pool)
-                    .await?;
+            let exists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM collections WHERE id = ?")
+                .bind(collection_id)
+                .fetch_one(&self.pool)
+                .await?;
 
             if exists.0 == 0 {
                 return Err(ApiError::NotFound(format!(

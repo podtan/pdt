@@ -60,8 +60,7 @@ impl Default for CedarConfig {
                 .unwrap_or_else(|_| "false".to_string())
                 .parse()
                 .unwrap_or(false),
-            policy_path: env::var("CEDAR_POLICY_PATH")
-                .unwrap_or_else(|_| "./policies".to_string()),
+            policy_path: env::var("CEDAR_POLICY_PATH").unwrap_or_else(|_| "./policies".to_string()),
             schema_path: env::var("CEDAR_SCHEMA_PATH")
                 .unwrap_or_else(|_| "./policies/schema.cedarschema".to_string()),
             validate_on_load: env::var("CEDAR_VALIDATE_ON_LOAD")
@@ -162,8 +161,7 @@ impl Config {
             },
             database_backend,
             #[cfg(feature = "sqlite-backend")]
-            sqlite_path: env::var("SQLITE_PATH")
-                .unwrap_or_else(|_| "pdt.db".to_string()),
+            sqlite_path: env::var("SQLITE_PATH").unwrap_or_else(|_| "pdt.db".to_string()),
             auth: AuthConfig {
                 enabled: env::var("AUTH_ENABLED")
                     .unwrap_or_else(|_| "true".to_string())

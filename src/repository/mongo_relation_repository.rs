@@ -24,11 +24,7 @@ impl MongoRelationRepository {
 
 #[async_trait::async_trait]
 impl RelationRepository for MongoRelationRepository {
-    async fn create(
-        &self,
-        request: CreateRelationRequest,
-        user_id: &str,
-    ) -> Result<Relation> {
+    async fn create(&self, request: CreateRelationRequest, user_id: &str) -> Result<Relation> {
         let now = Utc::now();
         let id = Uuid::new_v4().to_string();
 
@@ -151,7 +147,8 @@ impl RelationRepository for MongoRelationRepository {
         while let Some(current_id) = queue.pop_front() {
             let relations = self.get_asset_relations(&current_id).await?;
             for relation in relations {
-                if relation.from_asset_id == current_id && !visited.contains(&relation.to_asset_id) {
+                if relation.from_asset_id == current_id && !visited.contains(&relation.to_asset_id)
+                {
                     visited.insert(relation.to_asset_id.clone());
                     results.push(relation.to_asset_id.clone());
                     queue.push_back(relation.to_asset_id);

@@ -19,10 +19,7 @@ use pep::oidc::types::JwtClaims;
 /// - Tag-derived fields from `asset.tags` at eval time (status, asset_type) — no duplication
 pub fn asset_to_cedar_entity(asset: &Asset) -> Entity {
     let type_name: cedar_policy::EntityTypeName = "Asset".parse().unwrap();
-    let uid = EntityUid::from_type_name_and_id(
-        type_name,
-        EntityId::new(&asset.id),
-    );
+    let uid = EntityUid::from_type_name_and_id(type_name, EntityId::new(&asset.id));
 
     let mut attrs: HashMap<String, RestrictedExpression> = HashMap::new();
 
@@ -34,9 +31,7 @@ pub fn asset_to_cedar_entity(asset: &Asset) -> Entity {
         .expect("Invalid creator UID");
     attrs.insert(
         "created_by".to_string(),
-        RestrictedExpression::new_set(vec![
-            RestrictedExpression::new_entity_uid(creator_uid),
-        ]),
+        RestrictedExpression::new_set(vec![RestrictedExpression::new_entity_uid(creator_uid)]),
     );
 
     // From AuthContext (auth-only fields)
@@ -94,11 +89,14 @@ pub fn user_to_cedar_principal(claims: &JwtClaims) -> Entity {
     // Start with PEP's base entity builder (email, name, username, roles)
     let base_entity = match build_principal_entity(claims) {
         Ok(e) => e,
-        Err(_) => return Entity::new(
-            pep::cedar::build_principal_uid(claims).unwrap(),
-            HashMap::new(),
-            HashSet::new(),
-        ).unwrap(),
+        Err(_) => {
+            return Entity::new(
+                pep::cedar::build_principal_uid(claims).unwrap(),
+                HashMap::new(),
+                HashSet::new(),
+            )
+            .unwrap()
+        }
     };
 
     let uid = base_entity.uid().clone();
@@ -142,7 +140,10 @@ pub fn user_to_cedar_principal(claims: &JwtClaims) -> Entity {
             })
             .collect();
         if !set_exprs.is_empty() {
-            attrs.insert("groups".to_string(), RestrictedExpression::new_set(set_exprs));
+            attrs.insert(
+                "groups".to_string(),
+                RestrictedExpression::new_set(set_exprs),
+            );
         }
     }
 
@@ -166,9 +167,7 @@ mod tests {
         );
         extra.insert(
             "groups".to_string(),
-            serde_json::Value::Array(vec![serde_json::Value::String(
-                "developers".to_string(),
-            )]),
+            serde_json::Value::Array(vec![serde_json::Value::String("developers".to_string())]),
         );
         JwtClaims {
             sub: sub.to_string(),
@@ -249,9 +248,6 @@ mod tests {
     fn test_user_to_cedar_principal() {
         let claims = make_claims("alice@idm.tanbal.ir", "admin");
         let entity = user_to_cedar_principal(&claims);
-        assert_eq!(
-            entity.uid().to_string(),
-            r#"User::"alice@idm.tanbal.ir""#
-        );
+        assert_eq!(entity.uid().to_string(), r#"User::"alice@idm.tanbal.ir""#);
     }
 }

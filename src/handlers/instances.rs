@@ -107,22 +107,21 @@ pub async fn delete_instance(
     State(manager): State<TenantPoolManager>,
     Path(instance_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    manager
-        .delete_instance(&instance_id)
-        .await
-        .map_err(|e| {
-            let status = if e.to_string().contains("invalid instance id") {
-                axum::http::StatusCode::BAD_REQUEST
-            } else if e.to_string().contains("not found") {
-                axum::http::StatusCode::NOT_FOUND
-            } else {
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR
-            };
-            tracing::error!("Failed to delete instance {}: {}", instance_id, e);
-            (status, e.to_string())
-        })?;
+    manager.delete_instance(&instance_id).await.map_err(|e| {
+        let status = if e.to_string().contains("invalid instance id") {
+            axum::http::StatusCode::BAD_REQUEST
+        } else if e.to_string().contains("not found") {
+            axum::http::StatusCode::NOT_FOUND
+        } else {
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        };
+        tracing::error!("Failed to delete instance {}: {}", instance_id, e);
+        (status, e.to_string())
+    })?;
 
-    Ok(Json(serde_json::json!({ "deleted": true, "instance_id": instance_id })))
+    Ok(Json(
+        serde_json::json!({ "deleted": true, "instance_id": instance_id }),
+    ))
 }
 
 /// Simple response for instance list.
@@ -140,9 +139,7 @@ pub struct InstanceInfo {
     ),
     tag = "instances",
 )]
-pub async fn list_instances(
-    State(manager): State<TenantPoolManager>,
-) -> Json<Vec<InstanceInfo>> {
+pub async fn list_instances(State(manager): State<TenantPoolManager>) -> Json<Vec<InstanceInfo>> {
     let instances = manager
         .list_instances()
         .into_iter()
@@ -186,7 +183,10 @@ pub async fn list_instance_tree(
             .into_iter()
             .map(|(workspace_id, mut children)| {
                 children.sort();
-                InstanceTreeNode { workspace_id, children }
+                InstanceTreeNode {
+                    workspace_id,
+                    children,
+                }
             })
             .collect::<Vec<_>>()
             .into_iter()

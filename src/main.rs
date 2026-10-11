@@ -19,12 +19,11 @@ use pdt::config::{Config, DatabaseBackend};
 use pdt::db::Database;
 use pdt::handlers;
 use pdt::openapi::ApiDoc;
+use pdt::repository::{
+    MongoAssetRepository, MongoAuditRepository, MongoCollectionRepository, MongoRelationRepository,
+};
 use pdt::service::Services;
 use pdt::tenant::TenantPoolManager;
-use pdt::repository::{
-    MongoAssetRepository, MongoAuditRepository, MongoCollectionRepository,
-    MongoRelationRepository,
-};
 use pep::oidc_resource_server::ResourceServerClient;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -51,7 +50,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Load configuration
     let config = Config::from_env()?;
-    tracing::info!("Configuration loaded (backend: {:?})", config.database_backend);
+    tracing::info!(
+        "Configuration loaded (backend: {:?})",
+        config.database_backend
+    );
 
     // Initialize services based on configured backend
     let services = match config.database_backend {
@@ -67,12 +69,7 @@ async fn main() -> anyhow::Result<()> {
             let collection_repo = MongoCollectionRepository::new(db.clone());
             let audit_repo = MongoAuditRepository::new(db);
 
-            Services::from_repositories(
-                asset_repo,
-                relation_repo,
-                collection_repo,
-                audit_repo,
-            )
+            Services::from_repositories(asset_repo, relation_repo, collection_repo, audit_repo)
         }
         #[cfg(feature = "sqlite-backend")]
         DatabaseBackend::Sqlite => {
@@ -100,13 +97,11 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("SQLite migrations applied");
 
             // Rebuild FTS index for any pre-existing data (e.g. from migration script)
-            sqlx::raw_sql(
-                "INSERT INTO assets_fts(assets_fts) VALUES('rebuild');"
-            )
-            .execute(&pool)
-            .await
-            .map_err(|e| tracing::warn!("FTS rebuild skipped (non-fatal): {}", e))
-            .ok();
+            sqlx::raw_sql("INSERT INTO assets_fts(assets_fts) VALUES('rebuild');")
+                .execute(&pool)
+                .await
+                .map_err(|e| tracing::warn!("FTS rebuild skipped (non-fatal): {}", e))
+                .ok();
             tracing::info!("FTS index rebuilt");
 
             let asset_repo = SqliteAssetRepository::new(pool.clone());
@@ -114,12 +109,7 @@ async fn main() -> anyhow::Result<()> {
             let collection_repo = SqliteCollectionRepository::new(pool.clone());
             let audit_repo = SqliteAuditRepository::new(pool);
 
-            Services::from_repositories(
-                asset_repo,
-                relation_repo,
-                collection_repo,
-                audit_repo,
-            )
+            Services::from_repositories(asset_repo, relation_repo, collection_repo, audit_repo)
         }
     };
 
@@ -132,7 +122,10 @@ async fn main() -> anyhow::Result<()> {
                 Some(authorizer)
             }
             Err(e) => {
-                tracing::error!("Failed to initialize Cedar authorizer: {}. Running without Cedar.", e);
+                tracing::error!(
+                    "Failed to initialize Cedar authorizer: {}. Running without Cedar.",
+                    e
+                );
                 None
             }
         }
@@ -142,10 +135,13 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Initialize multi-tenant pool manager
-    let instances_dir = std::env::var("PDT_INSTANCES_DIR")
-        .unwrap_or_else(|_| "/data/instances".to_string());
+    let instances_dir =
+        std::env::var("PDT_INSTANCES_DIR").unwrap_or_else(|_| "/data/instances".to_string());
     let tenant_manager = TenantPoolManager::new(services, PathBuf::from(&instances_dir));
-    tracing::info!("Multi-tenant routing enabled (instances dir: {})", instances_dir);
+    tracing::info!(
+        "Multi-tenant routing enabled (instances dir: {})",
+        instances_dir
+    );
 
     // Initialize auth
     let auth_client = ResourceServerClient::new();
@@ -157,7 +153,10 @@ async fn main() -> anyhow::Result<()> {
     let public_routes = Router::new()
         .route("/health", get(handlers::health::health_check))
         // Cedar policy store endpoint — public so other services can fetch policies
-        .route("/api/cedar/policies", get(handlers::cedar::get_cedar_policies));
+        .route(
+            "/api/cedar/policies",
+            get(handlers::cedar::get_cedar_policies),
+        );
 
     // Protected routes (auth + Cedar)
     let protected_routes = Router::new()
@@ -179,7 +178,10 @@ async fn main() -> anyhow::Result<()> {
         )
         // Relation routes
         .route("/api/relations", post(handlers::relations::create_relation))
-        .route("/api/relations/{id}", get(handlers::relations::get_relation))
+        .route(
+            "/api/relations/{id}",
+            get(handlers::relations::get_relation),
+        )
         .route(
             "/api/relations/{id}",
             delete(handlers::relations::delete_relation),
@@ -230,10 +232,19 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::audit::get_asset_history),
         )
         // Tenant management endpoints
-        .route("/api/instances/{instance_id}/provision", post(handlers::instances::provision_instance))
-        .route("/api/instances/{instance_id}", axum::routing::delete(handlers::instances::delete_instance))
+        .route(
+            "/api/instances/{instance_id}/provision",
+            post(handlers::instances::provision_instance),
+        )
+        .route(
+            "/api/instances/{instance_id}",
+            axum::routing::delete(handlers::instances::delete_instance),
+        )
         .route("/api/instances", get(handlers::instances::list_instances))
-        .route("/api/instances/tree", get(handlers::instances::list_instance_tree))
+        .route(
+            "/api/instances/tree",
+            get(handlers::instances::list_instance_tree),
+        )
         // Middleware (auth + tracing + CORS)
         .layer(TraceLayer::new_for_http())
         .layer(auth_layer)
@@ -248,14 +259,8 @@ async fn main() -> anyhow::Result<()> {
         .merge(public_routes)
         .merge(protected_routes)
         // OpenAPI spec + Swagger UI (public, no auth)
-        .merge(
-            SwaggerUi::new("/swagger-ui")
-                .url("/api-docs/openapi.json", ApiDoc::openapi()),
-        )
-        .with_state((
-            tenant_manager,
-            authorizer.map(Arc::new),
-        ));
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .with_state((tenant_manager, authorizer.map(Arc::new)));
 
     // Start server
     let addr = format!("{}:{}", config.server.host, config.server.port)

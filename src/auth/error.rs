@@ -121,8 +121,8 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(www.starts_with("Bearer error=\"invalid_token\""), "{www}");
-        let bytes = futures::executor::block_on(axum::body::to_bytes(resp.into_body(), 4096))
-            .unwrap();
+        let bytes =
+            futures::executor::block_on(axum::body::to_bytes(resp.into_body(), 4096)).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON body");
         assert_eq!(v["error"], "token_expired");
         assert_eq!(v["retryable"], true);

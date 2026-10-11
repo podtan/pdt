@@ -16,13 +16,11 @@
 use std::collections::HashMap;
 
 use pdt::models::{
-    AddTagRequest, Asset, AuditAction, CreateAssetRequest, CreateCollectionRequest,
+    AddTagRequest, Asset, AuditAction, AuthContext, CreateAssetRequest, CreateCollectionRequest,
     CreateRelationRequest, RelationType, UpdateAssetRequest, UpdateAuthContextRequest,
-    UpdateCollectionRequest, AuthContext,
+    UpdateCollectionRequest,
 };
-use pdt::repository::{
-    AssetRepository, AuditRepository, CollectionRepository, RelationRepository,
-};
+use pdt::repository::{AssetRepository, AuditRepository, CollectionRepository, RelationRepository};
 
 // ============================================================================
 // TEST FIXTURE: A bundle of all 4 repositories for integration testing.
@@ -496,11 +494,7 @@ pub async fn relation_get_asset_relations<A: AssetRepository, R: RelationReposit
         .await
         .expect("get_asset_relations for a1 should succeed");
 
-    assert_eq!(
-        asset1_relations.len(),
-        1,
-        "a1 should have 1 relation"
-    );
+    assert_eq!(asset1_relations.len(), 1, "a1 should have 1 relation");
 
     let asset2_relations = relations
         .get_asset_relations(&a2.id)
@@ -952,8 +946,18 @@ pub async fn collection_remove_asset_from_all<A: AssetRepository, C: CollectionR
     collections.add_asset(&coll2.id, &asset.id).await.unwrap();
 
     // Verify it's in both
-    assert!(collections.get_by_id(&coll1.id).await.unwrap().asset_ids.contains(&asset.id));
-    assert!(collections.get_by_id(&coll2.id).await.unwrap().asset_ids.contains(&asset.id));
+    assert!(collections
+        .get_by_id(&coll1.id)
+        .await
+        .unwrap()
+        .asset_ids
+        .contains(&asset.id));
+    assert!(collections
+        .get_by_id(&coll2.id)
+        .await
+        .unwrap()
+        .asset_ids
+        .contains(&asset.id));
 
     // Remove from all
     collections
@@ -962,8 +966,18 @@ pub async fn collection_remove_asset_from_all<A: AssetRepository, C: CollectionR
         .expect("remove_asset_from_all should succeed");
 
     // Verify it's gone from both
-    assert!(!collections.get_by_id(&coll1.id).await.unwrap().asset_ids.contains(&asset.id));
-    assert!(!collections.get_by_id(&coll2.id).await.unwrap().asset_ids.contains(&asset.id));
+    assert!(!collections
+        .get_by_id(&coll1.id)
+        .await
+        .unwrap()
+        .asset_ids
+        .contains(&asset.id));
+    assert!(!collections
+        .get_by_id(&coll2.id)
+        .await
+        .unwrap()
+        .asset_ids
+        .contains(&asset.id));
 }
 
 // ============================================================================
@@ -1162,13 +1176,23 @@ pub async fn asset_delete_cascades<
     relations.delete_by_asset(&a1.id).await.unwrap();
     collections.remove_asset_from_all(&a1.id).await.unwrap();
     audit
-        .create("asset", &a1.id, AuditAction::Delete, serde_json::json!({}), "user1")
+        .create(
+            "asset",
+            &a1.id,
+            AuditAction::Delete,
+            serde_json::json!({}),
+            "user1",
+        )
         .await
         .unwrap();
 
     // Verify cascades
     assert!(
-        relations.get_asset_relations(&a1.id).await.unwrap().is_empty(),
+        relations
+            .get_asset_relations(&a1.id)
+            .await
+            .unwrap()
+            .is_empty(),
         "relations should be cleaned up"
     );
 

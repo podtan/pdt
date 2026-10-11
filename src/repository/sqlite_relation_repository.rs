@@ -53,14 +53,11 @@ impl SqliteRelationRepository {
 
 #[async_trait::async_trait]
 impl RelationRepository for SqliteRelationRepository {
-    async fn create(
-        &self,
-        request: CreateRelationRequest,
-        user_id: &str,
-    ) -> Result<Relation> {
+    async fn create(&self, request: CreateRelationRequest, user_id: &str) -> Result<Relation> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        let metadata_json = serde_json::to_string(&request.metadata).unwrap_or_else(|_| "{}".to_string());
+        let metadata_json =
+            serde_json::to_string(&request.metadata).unwrap_or_else(|_| "{}".to_string());
         let rel_type = request.relation_type.to_string();
 
         sqlx::query(
@@ -134,13 +131,12 @@ impl RelationRepository for SqliteRelationRepository {
     }
 
     async fn delete_by_asset(&self, asset_id: &str) -> Result<u64> {
-        let result = sqlx::query(
-            "DELETE FROM relations WHERE from_asset_id = ? OR to_asset_id = ?",
-        )
-        .bind(asset_id)
-        .bind(asset_id)
-        .execute(&self.pool)
-        .await?;
+        let result =
+            sqlx::query("DELETE FROM relations WHERE from_asset_id = ? OR to_asset_id = ?")
+                .bind(asset_id)
+                .bind(asset_id)
+                .execute(&self.pool)
+                .await?;
 
         Ok(result.rows_affected())
     }
@@ -198,7 +194,8 @@ impl RelationRepository for SqliteRelationRepository {
         while let Some(current_id) = queue.pop_front() {
             let relations = self.get_asset_relations(&current_id).await?;
             for relation in relations {
-                if relation.from_asset_id == current_id && !visited.contains(&relation.to_asset_id) {
+                if relation.from_asset_id == current_id && !visited.contains(&relation.to_asset_id)
+                {
                     visited.insert(relation.to_asset_id.clone());
                     results.push(relation.to_asset_id.clone());
                     queue.push_back(relation.to_asset_id);

@@ -17,7 +17,10 @@ impl AuditService {
         limit: i64,
         cursor: Option<&str>,
     ) -> Result<(Vec<AuditEntry>, Option<String>)> {
-        services.audit().list(entity_type, entity_id, user_id, limit, cursor).await
+        services
+            .audit()
+            .list(entity_type, entity_id, user_id, limit, cursor)
+            .await
     }
 
     /// Get history for a specific asset
@@ -26,6 +29,9 @@ impl AuditService {
         asset_id: &str,
         limit: i64,
     ) -> Result<Vec<AuditEntry>> {
-        services.audit().get_entity_history("asset", asset_id, limit).await
+        services
+            .audit()
+            .get_entity_history("asset", asset_id, limit)
+            .await
     }
 }
