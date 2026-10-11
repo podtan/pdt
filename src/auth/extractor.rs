@@ -5,6 +5,29 @@ use axum::{
 use pep::oidc::types::JwtClaims;
 use serde_json::Value;
 
+use super::AuthEnrichment;
+
+/// Extractor for the post-enrichment state (issue 365be03f).
+///
+/// Defaults to `Enriched` when the middleware marker is absent — that only
+/// happens on auth-disabled deployments, where there is no enrichment to
+/// degrade and the read guards must stay inert.
+pub struct Enrichment(pub AuthEnrichment);
+
+impl<S: Send + Sync> FromRequestParts<S> for Enrichment {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Enrichment(
+            parts
+                .extensions
+                .get::<AuthEnrichment>()
+                .copied()
+                .unwrap_or(AuthEnrichment::Enriched),
+        ))
+    }
+}
+
 pub struct AuthenticatedUser {
     pub user_id: String,
     pub username: Option<String>,
@@ -47,10 +70,7 @@ impl AuthenticatedUser {
             }
             None => {
                 // No original claims — assume least privilege
-                extra.insert(
-                    "role".to_string(),
-                    Value::String("viewer".to_string()),
-                );
+                extra.insert("role".to_string(), Value::String("viewer".to_string()));
             }
         }
 

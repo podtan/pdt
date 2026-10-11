@@ -5,6 +5,34 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-10-11
+
+### Fixed
+- **Visibility-filtered reads no longer lie by omission** (issue 365be03f, production
+  gate): when token-claims enrichment lands empty (Kanidm access tokens carry no
+  identity claims; pep treats userinfo HTTP errors as non-fatal Ok), the
+  zero-attribute principal used to make `GET /api/search` and `GET /api/assets`
+  answer 200-with-empty — indistinguishable from genuine absence (payam F1,
+  2026-10-07). Both endpoints now answer `503` with
+  `{"error":"auth_degraded","retryable":true}` when the request is auth-degraded.
+  Zero-rows means zero-rows.
+
+### Changed
+- pep 0.5.0 → 0.5.7: JWKS rotation force-refresh with storm guard, token-provider
+  honors real JWT exp (+ `TokenProvider::invalidate`), Cedar handles Kanidm's
+  array-form role claim, 60s JWT validation leeway.
+
+### Added
+- Post-enrichment request state (`Enriched`/`Degraded`) on the auth middleware,
+  journaled at WARN when degraded.
+- Real-binary IT gate `auth_degraded_it`: in-process mock IdP whose userinfo flips
+  to 400 mid-flight; asserts 503 (never 200-empty) on both filtered reads, honest
+  deny on asset-GET, and recovery — fresh sub per phase to dodge pep's per-sub
+  userinfo cache.
+
+### Style
+- Repo-wide rustfmt pass (rustfmt toolchain drift since 0.3.5; no behavior change).
+
 ## [0.3.5] - 2026-09-09
 
 ### Added

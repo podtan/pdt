@@ -1,6 +1,6 @@
 [package]
 name = "pdt"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 description = "Asset store API with relation graphs, tagging, full-text search, multi-instance SQLite tenancy, OIDC auth and Cedar authorization"
 license = "MIT OR Apache-2.0"
@@ -39,7 +39,7 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"
 cedar-policy = "4"
 
 # PEP library
-pep = { version = "0.5", features = ["cedar", "oidc-resource-server", "config", "axum"] }
+pep = { version = "0.5.7", features = ["cedar", "oidc-resource-server", "config", "axum"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -68,3 +68,6 @@ sqlite-backend = []
 
 [dev-dependencies]
 tokio-test = "0.4"
+# IT-only: signing throwaway tokens against the in-process mock IdP
+# (same major as pep's own dependency — dedupes to one build).
+jsonwebtoken = "9.3"

@@ -2188,7 +2188,7 @@ dependencies = [
 
 [[package]]
 name = "pdt"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2198,6 +2198,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "futures",
+ "jsonwebtoken",
  "mongodb",
  "pep",
  "regex",
@@ -2238,9 +2239,9 @@ dependencies = [
 
 [[package]]
 name = "pep"
-version = "0.5.0"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd3707ad04a6c8047fd8b7f640fff4404be2bd6f39c4544a22332ec5070f0363"
+checksum = "a8f3a4e5d46988457e59e5df88fcc40e6e3192dc563a74e5b2fc61198a12dbf7"
 dependencies = [
  "anyhow",
  "axum",

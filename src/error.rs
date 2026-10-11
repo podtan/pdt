@@ -50,6 +50,12 @@ pub enum ApiError {
 
     #[error("Validation error: {0}")]
     Validation(String),
+
+    /// Authorization material could not be verified for this request (token
+    /// claims enrichment failed). Visibility-filtered reads answer this
+    /// instead of 200-with-empty — zero-rows must mean zero-rows (365be03f).
+    #[error("Auth degraded: token claims could not be verified")]
+    AuthDegraded,
 }
 
 /// Error response format
@@ -128,6 +134,20 @@ impl IntoResponse for ApiError {
                     "SERIALIZATION_ERROR",
                     "A serialization error occurred".to_string(),
                 )
+            }
+            ApiError::AuthDegraded => {
+                // Contract body, not the generic ErrorResponse envelope:
+                // callers (payam directory resolution et al.) key on
+                // {"error":"auth_degraded","retryable":true} — issue 365be03f.
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({
+                        "error": "auth_degraded",
+                        "retryable": true,
+                        "request_id": request_id,
+                    })),
+                )
+                    .into_response();
             }
         };
 

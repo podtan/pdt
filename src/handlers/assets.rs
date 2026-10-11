@@ -8,12 +8,12 @@ use pep::oidc::types::JwtClaims;
 use serde::Deserialize;
 use utoipa::IntoParams;
 
-use crate::auth::AuthenticatedUser;
+use crate::auth::{AuthenticatedUser, Enrichment};
 use crate::cedar::enforcement::TenantState;
-use crate::error::Result;
+use crate::error::{ApiError, Result};
 use crate::models::{
-    AddTagRequest, Asset, CreateAssetRequest, PaginatedResponse, Tag,
-    UpdateAssetRequest, UpdateAuthContextRequest,
+    AddTagRequest, Asset, CreateAssetRequest, PaginatedResponse, Tag, UpdateAssetRequest,
+    UpdateAuthContextRequest,
 };
 use crate::service::AssetService;
 
@@ -170,20 +170,28 @@ pub async fn delete_asset(
 }
 
 /// List assets with pagination
+/// Auth-degraded requests (enrichment failed → zero-attribute principal) answer
+/// 503 auth_degraded instead of a lying 200-with-empty (issue 365be03f).
 #[utoipa::path(
     get,
     path = "/api/assets",
     params(ListAssetsParams),
     responses(
         (status = 200, description = "List of assets", body = PaginatedResponse<Asset>),
+        (status = 503, description = "Auth degraded — token claims could not be verified; body {error: auth_degraded, retryable: true}. Retry after re-authentication."),
     ),
     tag = "assets",
 )]
 pub async fn list_assets(
     tx: TenantState,
     user: AuthenticatedUser,
+    Enrichment(enrichment): Enrichment,
     Query(params): Query<ListAssetsParams>,
 ) -> Result<Json<PaginatedResponse<Asset>>> {
+    // 365be03f: refuse lying absence — same contract as search.
+    if enrichment == crate::auth::AuthEnrichment::Degraded {
+        return Err(ApiError::AuthDegraded);
+    }
     let (assets, next_cursor) = AssetService::list(
         tx.services(),
         params.limit,

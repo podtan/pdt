@@ -1,18 +1,13 @@
 //! Search handlers
 
-use axum::{
-    extract::Query,
-    Json,
-};
+use axum::{extract::Query, Json};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
-use crate::auth::AuthenticatedUser;
+use crate::auth::{AuthenticatedUser, Enrichment};
 use crate::cedar::enforcement::TenantState;
-use crate::error::Result;
-use crate::models::{
-    generate_snippet, PaginatedResponse, SearchResult, TagSummary,
-};
+use crate::error::{ApiError, Result};
+use crate::models::{generate_snippet, PaginatedResponse, SearchResult, TagSummary};
 use crate::service::SearchService;
 
 fn default_limit() -> i64 {
@@ -64,20 +59,30 @@ fn parse_tag_filters(params: &SearchParams) -> Vec<(String, String)> {
 
 /// Search assets — returns compact SearchResult by default, full Asset when full_content=true
 /// Cedar filtering: assets the user cannot View are excluded from results.
+/// Auth-degraded requests (enrichment failed → zero-attribute principal) answer
+/// 503 auth_degraded instead of a lying 200-with-empty (issue 365be03f).
 #[utoipa::path(
     get,
     path = "/api/search",
     params(SearchParams),
     responses(
         (status = 200, description = "Search results (compact SearchResult by default, full Asset when full_content=true)"),
+        (status = 503, description = "Auth degraded — token claims could not be verified; body {error: auth_degraded, retryable: true}. Retry after re-authentication."),
     ),
     tag = "search",
 )]
 pub async fn search(
     tx: TenantState,
     user: AuthenticatedUser,
+    Enrichment(enrichment): Enrichment,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<serde_json::Value>> {
+    // 365be03f: a degraded principal carries no authorization material; the
+    // Cedar visibility filter would drop every row and answer 200-with-empty
+    // — indistinguishable from genuine absence. Refuse before any query.
+    if enrichment == crate::auth::AuthEnrichment::Degraded {
+        return Err(ApiError::AuthDegraded);
+    }
     let claims = crate::cedar::enforcement::extract_claims_for_cedar(&user);
     let tag_filters = parse_tag_filters(&params);
 
@@ -92,12 +97,7 @@ pub async fn search(
 
     // Filter assets by Cedar View permission
     let visible_assets = if let Some(authorizer) = tx.authorizer() {
-        crate::cedar::enforcement::filter_by_permission(
-            authorizer,
-            &claims,
-            "View",
-            assets,
-        )
+        crate::cedar::enforcement::filter_by_permission(authorizer, &claims, "View", assets)
     } else {
         assets
     };

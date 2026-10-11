@@ -15,6 +15,44 @@ use std::{
 };
 use tower::{Layer, Service};
 
+use serde::{Deserialize, Serialize};
+
+/// Outcome of post-validation claims enrichment, carried on the request so
+/// visibility-filtered read endpoints can refuse to answer when authorization
+/// material is missing (issue 365be03f).
+///
+/// The lie this prevents: a principal whose enrichment silently failed is
+/// evaluated by Cedar as zero-attribute; visibility-filtered search/list then
+/// drop every row and answer 200-with-empty — indistinguishable from genuine
+/// absence. With this marker, those endpoints answer 503 auth_degraded
+/// instead. Zero-rows must mean zero-rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuthEnrichment {
+    /// Authorization material (groups and/or role) is present — Cedar
+    /// evaluation is honest whatever it decides.
+    Enriched,
+    /// Enrichment produced NO authorization material. On this platform's
+    /// Kanidm IdP access tokens carry no identity claims (tocpi 0.7.2
+    /// finding), so groups/role can only arrive via the userinfo merge; a
+    /// zero-attribute principal after an enrichment attempt means that
+    /// merge failed (pep treats userinfo HTTP errors as non-fatal Ok —
+    /// the 2026-10-07 payam F1 window). Filtered reads must not answer 200.
+    Degraded,
+}
+
+/// Classify claims that have just been through enrichment.
+///
+/// Degraded ⇔ neither `groups` nor `role` landed. Any landed attribute makes
+/// Cedar's deny/allow decision truthful (it evaluates real data the principal
+/// verifiably holds); the lie requires a fully zero-attribute principal.
+pub fn classify_enrichment(claims: &JwtClaims) -> AuthEnrichment {
+    if claims.extra.contains_key("groups") || claims.extra.contains_key("role") {
+        AuthEnrichment::Enriched
+    } else {
+        AuthEnrichment::Degraded
+    }
+}
+
 #[derive(Clone)]
 pub struct AuthLayer {
     config: AuthConfig,
@@ -73,6 +111,7 @@ where
                 if config.dev_mode {
                     inject_mock_claims(&mut req);
                 }
+                req.extensions_mut().insert(AuthEnrichment::Enriched);
                 return inner.call(req).await;
             }
 
@@ -81,6 +120,7 @@ where
                 None => {
                     if config.dev_mode {
                         inject_mock_claims(&mut req);
+                        req.extensions_mut().insert(AuthEnrichment::Enriched);
                         return inner.call(req).await;
                     }
                     return Ok(AuthError::MissingToken.into_response());
@@ -124,6 +164,18 @@ where
                         );
                         return Ok(AuthError::EnrichmentFailed(format!("{}", e)).into_response());
                     }
+                    // 365be03f: pep treats userinfo HTTP errors as non-fatal Ok
+                    // (the 2026-10-07 payam F1 window), so Err never fires for a
+                    // rejected token — classify by what actually landed instead.
+                    let enrichment = classify_enrichment(&claims);
+                    if enrichment == AuthEnrichment::Degraded {
+                        tracing::warn!(
+                            "Auth: enrichment landed EMPTY (no groups/role after userinfo) \
+                             — marking request AUTH-DEGRADED; visibility-filtered reads \
+                             will answer 503 auth_degraded (issue 365be03f)"
+                        );
+                    }
+                    req.extensions_mut().insert(enrichment);
                     req.extensions_mut().insert(claims);
                     inner.call(req).await
                 }
@@ -137,10 +189,7 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     headers
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
-        .and_then(|s| {
-            s.strip_prefix("Bearer ")
-                .map(|token| token.to_string())
-        })
+        .and_then(|s| s.strip_prefix("Bearer ").map(|token| token.to_string()))
 }
 
 fn inject_mock_claims(req: &mut Request) {
@@ -151,9 +200,7 @@ fn inject_mock_claims(req: &mut Request) {
     );
     extra.insert(
         "groups".to_string(),
-        serde_json::Value::Array(vec![
-            serde_json::Value::String("developers".to_string()),
-        ]),
+        serde_json::Value::Array(vec![serde_json::Value::String("developers".to_string())]),
     );
 
     let claims = JwtClaims {

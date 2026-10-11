@@ -27,7 +27,10 @@ mod config_tests {
         assert_eq!(config.issuer_url, "https://auth.example.com");
         assert_eq!(config.expected_audience, Some("custom-api".to_string()));
         assert!(config.dev_mode);
-        assert_eq!(config.userinfo_url, Some("https://auth.example.com/userinfo".to_string()));
+        assert_eq!(
+            config.userinfo_url,
+            Some("https://auth.example.com/userinfo".to_string())
+        );
     }
 
     #[test]
@@ -230,7 +233,10 @@ mod auth_config_integration_tests {
             issuer_url: "https://keycloak.example.com/auth/realms/myrealm".to_string(),
             expected_audience: Some("my-service".to_string()),
             dev_mode: true,
-            userinfo_url: Some("https://keycloak.example.com/auth/realms/myrealm/protocol/openid-connect/userinfo".to_string()),
+            userinfo_url: Some(
+                "https://keycloak.example.com/auth/realms/myrealm/protocol/openid-connect/userinfo"
+                    .to_string(),
+            ),
         };
 
         assert!(config.enabled);
@@ -238,5 +244,62 @@ mod auth_config_integration_tests {
         assert_eq!(config.expected_audience, Some("my-service".to_string()));
         assert!(config.dev_mode);
         assert!(config.userinfo_url.as_ref().unwrap().contains("userinfo"));
+    }
+}
+
+// ============================================================================
+// ENRICHMENT CLASSIFICATION (issue 365be03f)
+// ============================================================================
+
+#[cfg(test)]
+mod enrichment_classification {
+    use crate::auth::middleware::{classify_enrichment, AuthEnrichment};
+    use pep::oidc::types::JwtClaims;
+
+    fn claims_with(extra: &[(&str, serde_json::Value)]) -> JwtClaims {
+        JwtClaims {
+            sub: "u-1".to_string(),
+            iss: "test-issuer".to_string(),
+            aud: None,
+            exp: 9_999_999_999,
+            iat: Some(0),
+            email: None,
+            name: None,
+            preferred_username: None,
+            extra: extra
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn groups_present_is_enriched() {
+        let claims = claims_with(&[("groups", serde_json::json!(["plt-agents"]))]);
+        assert_eq!(classify_enrichment(&claims), AuthEnrichment::Enriched);
+    }
+
+    #[test]
+    fn role_only_is_enriched() {
+        // Service accounts with a mapped role carry real authorization
+        // material — Cedar's evaluation with it is honest (no lie possible).
+        let claims = claims_with(&[("role", serde_json::json!("admin"))]);
+        assert_eq!(classify_enrichment(&claims), AuthEnrichment::Enriched);
+    }
+
+    #[test]
+    fn zero_attributes_is_degraded() {
+        // The exact incident shape: Kanidm AT carries no identity claims and
+        // the userinfo merge failed (pep swallows the HTTP error as Ok) —
+        // a zero-attribute principal must NOT read as enriched.
+        let claims = claims_with(&[]);
+        assert_eq!(classify_enrichment(&claims), AuthEnrichment::Degraded);
+    }
+
+    #[test]
+    fn unrelated_extra_fields_do_not_count_as_material() {
+        // email/jti etc. are not authorization material.
+        let claims = claims_with(&[("email", serde_json::json!("a@b.c"))]);
+        assert_eq!(classify_enrichment(&claims), AuthEnrichment::Degraded);
     }
 }
