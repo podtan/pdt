@@ -5,6 +5,27 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-10-11
+
+### Changed
+- pep 0.5.7 → 0.5.8 (Bonyan's fail-closed enrichment; owner fix order payam
+  a77cd19c): userinfo failures no longer swallow to `Ok(())` — they surface as
+  `PepError::AuthDegraded { retryable }`. The auth middleware now branches:
+  - **retryable** degradation (IdP 5xx/429/transport) → `503
+    {"error":"auth_degraded","retryable":true}` — the issue-365be03f contract
+    filtered reads key on; the same request may succeed on retry.
+  - **non-retryable** degradation (4xx invalid_token — terminal for the token)
+    and other enrichment failures → the standing b82a1925
+    `401 token_expired retryable` contract with `WWW-Authenticate` challenge;
+    a caller's reactive refresh cures it in one request.
+- The post-enrichment classification layer (v0.3.6) stays as defense in depth
+  for the "200-but-no-attributes" case, which pep 0.5.8 still returns `Ok`.
+
+### Added
+- IT gate now covers both degraded flavors on the real binary: dead-token 401
+  with challenge + transient 503 contract, each on a fresh sub (userinfo-cache
+  dodge), plus the fail-closed pre-handler asset-GET assertion.
+
 ## [0.3.6] - 2026-10-11
 
 ### Fixed

@@ -157,6 +157,24 @@ where
                         )
                         .await
                     {
+                        // pep >= 0.5.8 fails closed: userinfo failures surface as
+                        // PepError::AuthDegraded instead of the old Ok-swallow.
+                        // Two honest shapes (issue 365be03f contract):
+                        //  - retryable degraded (IdP 5xx/429/transport) → 503
+                        //    auth_degraded, the marker filtered reads key on;
+                        //    same request may succeed on retry.
+                        //  - everything else (4xx invalid_token = terminal for
+                        //    this token, pep parse failures) → the standing
+                        //    b82a1925 401-with-retry contract; the caller's
+                        //    reactive refresh cures it in one request.
+                        if e.is_auth_degraded() && e.retryable() {
+                            tracing::warn!(
+                                "Auth: enrichment AUTH-DEGRADED (transient upstream: {}) — \
+                                 answering 503 auth_degraded (issue 365be03f)",
+                                e
+                            );
+                            return Ok(crate::error::ApiError::AuthDegraded.into_response());
+                        }
                         tracing::warn!(
                             "Auth: userinfo enrichment FAILED — answering 401 with retry \
                              signal (default-role fallback removed, request fails loudly): {}",
@@ -164,9 +182,10 @@ where
                         );
                         return Ok(AuthError::EnrichmentFailed(format!("{}", e)).into_response());
                     }
-                    // 365be03f: pep treats userinfo HTTP errors as non-fatal Ok
-                    // (the 2026-10-07 payam F1 window), so Err never fires for a
-                    // rejected token — classify by what actually landed instead.
+                    // Layer 2 (defense in depth): pep >= 0.5.8 fails closed on
+                    // userinfo HTTP errors, but a 200 response carrying no
+                    // groups/role still returns Ok — classify what actually
+                    // landed (issue 365be03f).
                     let enrichment = classify_enrichment(&claims);
                     if enrichment == AuthEnrichment::Degraded {
                         tracing::warn!(

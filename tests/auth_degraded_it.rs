@@ -10,11 +10,13 @@
 //! This gate drives the REAL pdt binary (sqlite-backend) against an
 //! in-process mock IdP whose userinfo endpoint can be flipped mid-flight:
 //!   phase 1 (enriched)  — fresh sub enriches, canary asset visible: 200 WITH rows
-//!   phase 2 (degraded)  — userinfo answers 400 invalid_token; a FRESH sub
-//!                         (dodges the per-sub userinfo cache) gets:
-//!                         search → 503 {"error":"auth_degraded","retryable":true}
-//!                         list   → 503 same body
-//!                         asset-GET → honest deny (never 200-with-content)
+//!   phase 2a (dead token)  — userinfo 400 invalid_token (terminal) → honest
+//!                          401-with-retry; a reactive refresh cures it
+//!   phase 2b (degraded)    — userinfo 503 (transient) → a FRESH sub
+//!                          (dodges the per-sub userinfo cache) gets:
+//!                          search → 503 {"error":"auth_degraded","retryable":true}
+//!                          list   → 503 same body
+//!                          asset-GET → fail-closed pre-handler, never 200
 //!   phase 3 (recovered) — userinfo restored; another fresh sub sees 200 WITH rows
 //!
 //! Fresh-sub-per-phase is load-bearing: pep caches userinfo by `sub` until
@@ -43,7 +45,12 @@ const GROUP: &str = "plt-agents";
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UserinfoMode {
     Ok,
-    Reject,
+    /// 400 invalid_token — terminal for the token (pep: retryable=false) →
+    /// expect the b82a1925 401-with-retry contract; a reactive refresh cures it.
+    Reject400,
+    /// 503 — transient upstream (pep: retryable=true) → expect the exact
+    /// 503 {"error":"auth_degraded","retryable":true} contract (365be03f).
+    Reject503,
 }
 
 struct MockIdp {
@@ -123,11 +130,16 @@ async fn spawn_mock_idp() -> MockIdp {
                             "200 OK",
                             r#"{"sub":"ignored","groups":["plt-agents"],"role":"member"}"#,
                         ),
-                        // The exact incident wire: Kanidm rejecting the dead
-                        // session's token at userinfo (payam F1, 07:24:45Z).
-                        UserinfoMode::Reject => {
+                        // The exact incident wire (payam F1, 07:24:45Z): the IdP
+                        // rejecting the dead session's token at userinfo.
+                        UserinfoMode::Reject400 => {
                             http_response("400 Bad Request", r#"{"error":"invalid_token"}"#)
                         }
+                        // Transient upstream failure — the retryable flavor.
+                        UserinfoMode::Reject503 => http_response(
+                            "503 Service Unavailable",
+                            r#"{"error":"temporarily_unavailable"}"#,
+                        ),
                     }
                 } else {
                     http_response("404 Not Found", r#"{"error":"not found"}"#)
@@ -324,8 +336,41 @@ async fn degraded_enrichment_never_answers_200_empty_on_filtered_reads() {
     );
     eprintln!("OBSERVED phase-1 enriched search 200 with canary visible");
 
-    // ── phase 2: DEGRADED — the incident, reproduced on the wire ──
-    idp.set_mode(UserinfoMode::Reject);
+    // ── phase 2a: DEAD-TOKEN flavor (userinfo 400 invalid_token) ──
+    // Terminal for this token → honest 401-with-retry (b82a1925 contract).
+    // A reactive refresh cures it — never a 200 of any kind.
+    idp.set_mode(UserinfoMode::Reject400);
+
+    let resp = client
+        .get(format!("{}/api/search", pdt.base))
+        .query(&[("q", canary_token)])
+        .header("Authorization", auth("agent-stale"))
+        .send()
+        .await
+        .expect("stale-token search");
+    let status = resp.status();
+    assert_eq!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED,
+        "dead-token search must 401-with-retry — NEVER 200 of any kind"
+    );
+    let www = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        www.starts_with("Bearer error=\"invalid_token\""),
+        "401 must carry the WWW-Authenticate retry signal, got: {www}"
+    );
+    let body: serde_json::Value = resp.json().await.expect("stale-token body");
+    assert_eq!(body["error"].as_str(), Some("token_expired"), "{body}");
+    assert_eq!(body["retryable"].as_bool(), Some(true), "{body}");
+    eprintln!("OBSERVED dead-token (400) search → 401 token_expired retryable + challenge");
+
+    // ── phase 2b: TRANSIENT flavor (userinfo 503) — the 503 contract ──
+    idp.set_mode(UserinfoMode::Reject503);
 
     let resp = client
         .get(format!("{}/api/search", pdt.base))
@@ -351,7 +396,7 @@ async fn degraded_enrichment_never_answers_200_empty_on_filtered_reads() {
         Some(true),
         "retryable marker missing: {body}"
     );
-    eprintln!("OBSERVED degraded search → 503 auth_degraded retryable=true");
+    eprintln!("OBSERVED degraded (503) search → 503 auth_degraded retryable=true");
 
     let resp = client
         .get(format!("{}/api/assets", pdt.base))
@@ -369,8 +414,8 @@ async fn degraded_enrichment_never_answers_200_empty_on_filtered_reads() {
     assert_eq!(body["error"].as_str(), Some("auth_degraded"));
     eprintln!("OBSERVED degraded list → 503 auth_degraded");
 
-    // Honesty preserved on the single-asset surface: an honest deny, never a
-    // 200 carrying content the principal's (unverifiable) attributes gate.
+    // Under pep 0.5.8 fail-closed, the middleware answers BEFORE any handler
+    // runs — asset-GET rides the same 503 (louder than the old Cedar deny).
     let resp = client
         .get(format!("{}/api/assets/{asset_id}", pdt.base))
         .header("Authorization", auth("agent-degraded"))
@@ -381,20 +426,21 @@ async fn degraded_enrichment_never_answers_200_empty_on_filtered_reads() {
     let body_text = resp.text().await.unwrap_or_default();
     assert_ne!(status, 200, "degraded asset-GET must not answer 200");
     assert!(
-        status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::NOT_FOUND,
-        "degraded asset-GET must be an honest deny (403/404), got {status}"
+        status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+            || status == reqwest::StatusCode::UNAUTHORIZED,
+        "degraded asset-GET must be 503/401 (fail-closed pre-handler), got {status}"
     );
     assert!(
         !body_text.contains("secret-marker-zqx"),
         "content must not leak on the deny path"
     );
-    eprintln!("OBSERVED degraded asset-GET → {status} (honest deny, no content leak)");
+    eprintln!("OBSERVED degraded asset-GET → {status} (fail-closed, no content leak)");
 
     // The mock IdP was genuinely exercised per fresh sub (cache-dodge proof):
-    // enriched, degraded, and recovery subs each had to reach userinfo.
+    // enriched, stale, degraded, and recovery subs each had to reach userinfo.
     let hits = idp.userinfo_hits.load(Ordering::SeqCst);
     assert!(
-        hits >= 3,
+        hits >= 4,
         "userinfo must have been hit at least once per fresh sub (got {hits}) — \
          otherwise the degradation was masked by pep's userinfo cache"
     );
