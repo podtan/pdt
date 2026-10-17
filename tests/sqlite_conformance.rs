@@ -11,8 +11,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
 use pdt::repository::{
-    AssetRepository, SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
-    SqliteRelationRepository,
+    AssetRepository, RelationRepository, SqliteAssetRepository, SqliteAuditRepository,
+    SqliteCollectionRepository, SqliteRelationRepository,
 };
 
 /// Create a fresh in-memory SQLite database with migrations applied.
@@ -143,6 +143,69 @@ async fn sqlite_asset_update_auth_context() {
 async fn sqlite_relation_create_and_get() {
     let (assets, relations, _, _) = setup_repos().await;
     common::relation_create_and_get(&assets, &relations).await;
+}
+
+#[tokio::test]
+async fn sqlite_relation_has_access_round_trip() {
+    // tocpi workspace membership v1 rides the has_access relation type —
+    // the sqlite parse mapping must round-trip it, never swallow it to
+    // related_to (the silent-swallow class, parse_relation_type `_` arm).
+    use pdt::models::{CreateAssetRequest, CreateRelationRequest, RelationType};
+    let (assets, relations, _, _) = setup_repos().await;
+
+    // FK-constrained: both endpoints must exist as assets first; create
+    // returns the server-assigned id.
+    let user = assets
+        .create(
+            CreateAssetRequest {
+                title: "Test User".to_string(),
+                content: None,
+                tags: vec![],
+                metadata: std::collections::HashMap::new(),
+                auth_context: None,
+            },
+            "creator",
+        )
+        .await
+        .expect("user asset seeds");
+    let ws = assets
+        .create(
+            CreateAssetRequest {
+                title: "Test Workspace".to_string(),
+                content: None,
+                tags: vec![],
+                metadata: std::collections::HashMap::new(),
+                auth_context: None,
+            },
+            "creator",
+        )
+        .await
+        .expect("workspace asset seeds");
+
+    let created = relations
+        .create(
+            CreateRelationRequest {
+                from_asset_id: user.id.clone(),
+                to_asset_id: ws.id.clone(),
+                relation_type: RelationType::HasAccess,
+                metadata: std::collections::HashMap::new(),
+            },
+            "creator",
+        )
+        .await
+        .expect("has_access relation creates");
+    assert_eq!(created.relation_type, RelationType::HasAccess);
+
+    let read_back = relations
+        .get_asset_relations(&user.id)
+        .await
+        .expect("relations read back");
+    assert!(
+        read_back
+            .iter()
+            .any(|r| r.relation_type == RelationType::HasAccess && r.to_asset_id == ws.id),
+        "has_access must survive the sqlite round trip, not degrade to related_to"
+    );
 }
 
 #[tokio::test]

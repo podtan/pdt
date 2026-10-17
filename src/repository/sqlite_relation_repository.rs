@@ -29,6 +29,7 @@ impl SqliteRelationRepository {
             "complements" => RelationType::Complements,
             "has_instance" => RelationType::HasInstance,
             "has_agent" => RelationType::HasAgent,
+            "has_access" => RelationType::HasAccess,
             _ => RelationType::RelatedTo,
         }
     }

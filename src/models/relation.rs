@@ -27,6 +27,9 @@ pub enum RelationType {
     HasInstance,
     /// User owns an agent (e.g. User → Agent)
     HasAgent,
+    /// User has membership access to a resource (e.g. User → Workspace,
+    /// role in metadata: admin|member — tocpi workspace membership v1)
+    HasAccess,
 }
 
 impl std::fmt::Display for RelationType {
@@ -40,6 +43,7 @@ impl std::fmt::Display for RelationType {
             RelationType::Complements => write!(f, "complements"),
             RelationType::HasInstance => write!(f, "has_instance"),
             RelationType::HasAgent => write!(f, "has_agent"),
+            RelationType::HasAccess => write!(f, "has_access"),
         }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "pdt"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2021"
 description = "Asset store API with relation graphs, tagging, full-text search, multi-instance SQLite tenancy, OIDC auth and Cedar authorization"
 license = "MIT OR Apache-2.0"

@@ -320,3 +320,117 @@ pub fn filter_by_permission(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod created_by_delete_tests {
+    //! Delete-gap regression tests (Farzan ruling d130b9b5, 2026-10-17):
+    //! created-by delete ALLOW, non-created-by non-admin DENY, admin ALLOW.
+    //! The class: a user who could create a workspace but could never delete
+    //! it (Cedar permitted Delete only for role=admin) — an orphan factory
+    //! with a 500-on-403 wrapper in tocpi.
+
+    use super::*;
+    use crate::models::AuthContext;
+    use pep::cedar::CedarConfig;
+    use std::path::PathBuf;
+
+    fn test_authorizer() -> CedarAuthorizer {
+        let config = CedarConfig {
+            policy_path: PathBuf::from("/nonexistent/policies.cedar"),
+            schema_path: None,
+            entities_path: None,
+            default_decision: Default::default(),
+            validate_on_load: true,
+            policy_store_url: None,
+            policy_store_token: None,
+            embedded_policy: Some(include_str!("../../policies/rbac.cedar")),
+            embedded_schema: Some(include_str!("../../policies/schema.cedarschema")),
+        };
+        CedarAuthorizer::new(config).expect("embedded policy loads")
+    }
+
+    fn claims_for(sub: &str, role: &str) -> JwtClaims {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "role".to_string(),
+            serde_json::Value::String(role.to_string()),
+        );
+        extra.insert(
+            "groups".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String(
+                "unrelated-group".to_string(),
+            )]),
+        );
+        JwtClaims {
+            sub: sub.to_string(),
+            iss: "test-issuer".to_string(),
+            aud: None,
+            exp: 9999999999,
+            iat: None,
+            email: Some(format!("{}@example.com", sub)),
+            name: None,
+            preferred_username: None,
+            extra,
+        }
+    }
+
+    fn workspace_asset(created_by: &str) -> Asset {
+        Asset {
+            id: "ws-test-1".to_string(),
+            title: "Test Workspace".to_string(),
+            content: None,
+            tags: vec![],
+            metadata: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            created_by: created_by.to_string(),
+            updated_by: created_by.to_string(),
+            deleted_at: None,
+            auth_context: Some(AuthContext {
+                visibility: "team".to_string(),
+                owner_groups: vec!["ws-ws-test-1-admins@idp.tanbal.ir".to_string()],
+                confidentiality: String::new(),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn created_by_delete_allowed() {
+        let authorizer = test_authorizer();
+        let asset = workspace_asset("alice");
+        let claims = claims_for("alice", "user");
+        let allowed = evaluate_permission(&authorizer, &claims, "Delete", &asset)
+            .expect("evaluation succeeds");
+        assert!(allowed, "creator must be able to delete their own asset");
+    }
+
+    #[tokio::test]
+    async fn non_created_by_non_admin_delete_denied() {
+        let authorizer = test_authorizer();
+        let asset = workspace_asset("alice");
+        let claims = claims_for("bob", "user");
+        let allowed = evaluate_permission(&authorizer, &claims, "Delete", &asset)
+            .expect("evaluation succeeds");
+        assert!(!allowed, "non-creator non-admin must NOT be able to delete");
+    }
+
+    #[tokio::test]
+    async fn admin_delete_still_allowed() {
+        let authorizer = test_authorizer();
+        let asset = workspace_asset("alice");
+        let claims = claims_for("super", "admin");
+        let allowed = evaluate_permission(&authorizer, &claims, "Delete", &asset)
+            .expect("evaluation succeeds");
+        assert!(allowed, "admin (super_admin) delete must keep working");
+    }
+
+    #[tokio::test]
+    async fn created_by_edit_unchanged() {
+        let authorizer = test_authorizer();
+        let asset = workspace_asset("alice");
+        let claims = claims_for("alice", "user");
+        let allowed =
+            evaluate_permission(&authorizer, &claims, "Edit", &asset).expect("evaluation succeeds");
+        assert!(allowed, "created_by Edit policy must keep working");
+    }
+}

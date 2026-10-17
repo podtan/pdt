@@ -62,6 +62,19 @@ permit(
     principal has role && principal.role == "admin"
 };
 
+// Owners can delete assets they created (ownership policy — mirrors the
+// created_by Edit policy below). Delete-gap fix (Farzan ruling d130b9b5,
+// 2026-10-17): a user who can create a workspace but can never delete it is
+// an orphan factory; this keeps caller-credential attribution and does NOT
+// promote group-based members (created_by is creator-only).
+permit(
+    principal,
+    action == Action::"Delete",
+    resource
+) when {
+    resource has created_by && principal in resource.created_by
+};
+
 // Users can edit assets they created (ownership policy)
 permit(
     principal,
