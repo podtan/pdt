@@ -50,8 +50,11 @@ pub struct CreateAssetRequest {
     pub tags: Vec<super::AddTagRequest>, // Should include at least one AssetType tag
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
-    /// Optional auth_context to set at creation time (overrides defaults).
-    /// If omitted, defaults to public/internal/empty.
+    /// Optional auth_context to set at creation time.
+    /// GUARD (0e583f06): an omitted or empty band never stores — creates
+    /// default to the caller's cohort band (visibility="team" + caller's
+    /// groups), or "private" (creator-only, loud WARN) when the caller has
+    /// no groups claim. Explicit non-empty visibility is honored as-is.
     #[serde(default)]
     pub auth_context: Option<super::AuthContext>,
 }

@@ -472,3 +472,130 @@ async fn degraded_enrichment_never_answers_200_empty_on_filtered_reads() {
         idp.userinfo_hits.load(Ordering::SeqCst)
     );
 }
+
+// ───────────────────────── born-empty guard (0e583f06) ─────────────────────────
+//
+// GUARD IT: an asset created with NO auth_context must be born with a real
+// band — the caller's cohort (team + caller groups) — never the black-hole
+// visibility="" state that matches no View permit except admin/creator.
+// Attestation: a DIFFERENT sub in the same cohort Views the unstamped create
+// → 200. Before the guard this was the born-mask class (assignees invisible
+// to themselves; 7 manual heals on 2026-10-20 alone).
+#[tokio::test]
+async fn born_empty_create_defaults_to_cohort_band_and_is_visible_to_cohort() {
+    let idp = spawn_mock_idp().await;
+    let pdt = spawn_pdt(&idp).await;
+    let client = wait_health(&pdt.base).await;
+    eprintln!("OBSERVED pdt up at {} (mock IdP {})", pdt.base, idp.base);
+
+    let auth = |sub: &str| format!("Bearer {}", sign_token(&idp.base, sub));
+
+    // ── phase 1: creator creates with NO auth_context ──
+    let resp = client
+        .post(format!("{}/api/assets", pdt.base))
+        .header("Authorization", auth("creator-alice"))
+        .json(&serde_json::json!({
+            "title": "born-empty guard canary 0e583f06",
+            "content": "unstamped create — must be born cohort-banded",
+        }))
+        .send()
+        .await
+        .expect("create unstamped");
+    assert!(
+        resp.status().is_success(),
+        "unstamped create must succeed (guard defaults, never refuses a cohort caller) — got {}",
+        resp.status()
+    );
+    let created: serde_json::Value = resp.json().await.expect("create body");
+    let asset_id = created["_id"]
+        .as_str()
+        .expect("asset id (Asset serializes id as _id)")
+        .to_string();
+    let stored_visibility = created["auth_context"]["visibility"]
+        .as_str()
+        .expect("auth_context.visibility present after guard");
+    let stored_groups = created["auth_context"]["owner_groups"]
+        .as_array()
+        .expect("owner_groups array after guard");
+    eprintln!(
+        "OBSERVED unstamped create born visibility={stored_visibility} owner_groups={stored_groups:?}"
+    );
+    assert_eq!(
+        stored_visibility, "team",
+        "guard must default an empty band to the caller's cohort (team)"
+    );
+    assert!(
+        stored_groups.iter().any(|g| g.as_str() == Some(GROUP)),
+        "guard must fill owner_groups from the caller's groups claim"
+    );
+
+    // ── phase 2: a DIFFERENT sub in the same cohort Views the asset → 200 ──
+    // The born-mask class: before the guard this asset carried visibility=""
+    // and matched no View permit for bob (different sub, not the creator).
+    let resp = client
+        .get(format!("{}/api/assets/{asset_id}", pdt.base))
+        .header("Authorization", auth("assignee-bob"))
+        .send()
+        .await
+        .expect("cohort view");
+    assert_eq!(
+        resp.status(),
+        200,
+        "cohort member (different sub, same group) must View the unstamped create — the born-mask is dead"
+    );
+    eprintln!("OBSERVED cohort member bob (different sub) Views the unstamped create → 200");
+
+    // ── phase 3: explicit empty-visibility + owner_groups normalizes to team ──
+    let resp = client
+        .post(format!("{}/api/assets", pdt.base))
+        .header("Authorization", auth("creator-alice"))
+        .json(&serde_json::json!({
+            "title": "empty-visibility normalize canary 0e583f06",
+            "auth_context": {
+                "visibility": "",
+                "owner_groups": [GROUP],
+            },
+        }))
+        .send()
+        .await
+        .expect("create empty-visibility");
+    assert!(
+        resp.status().is_success(),
+        "empty-visibility create must succeed (normalized, never refused)"
+    );
+    let created: serde_json::Value = resp.json().await.expect("create body");
+    assert_eq!(
+        created["auth_context"]["visibility"].as_str(),
+        Some("team"),
+        "empty visibility with owner_groups must normalize to team"
+    );
+    assert_eq!(
+        created["auth_context"]["owner_groups"][0].as_str(),
+        Some(GROUP),
+        "caller-provided owner_groups must be preserved verbatim"
+    );
+    eprintln!("OBSERVED empty-visibility + owner_groups normalized to team, groups preserved");
+
+    // ── phase 4: explicit public is untouched ──
+    let resp = client
+        .post(format!("{}/api/assets", pdt.base))
+        .header("Authorization", auth("creator-alice"))
+        .json(&serde_json::json!({
+            "title": "explicit-public canary 0e583f06",
+            "auth_context": {
+                "visibility": "public",
+                "owner_groups": [],
+            },
+        }))
+        .send()
+        .await
+        .expect("create explicit public");
+    assert!(resp.status().is_success());
+    let created: serde_json::Value = resp.json().await.expect("create body");
+    assert_eq!(
+        created["auth_context"]["visibility"].as_str(),
+        Some("public"),
+        "explicit non-empty visibility must be honored as-is"
+    );
+    eprintln!("OBSERVED explicit public honored as-is");
+}

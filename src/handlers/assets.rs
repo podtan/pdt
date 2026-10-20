@@ -65,9 +65,27 @@ pub async fn create_asset(
     Json(request): Json<CreateAssetRequest>,
 ) -> Result<Json<Asset>> {
     let user_id = &user.user_id;
+    let caller_groups = extract_caller_groups(&user);
 
-    let asset = AssetService::create(tx.services(), request, user_id).await?;
+    let asset = AssetService::create(tx.services(), request, user_id, &caller_groups).await?;
     Ok(Json(asset))
+}
+
+/// Extract the caller's `groups` claim for the born-empty guard (0e583f06).
+/// Group-less principals (agent svcacct tokens, test construction) yield an
+/// empty vec — the guard then defaults to an honest private band instead of
+/// the born-mask black hole.
+fn extract_caller_groups(user: &AuthenticatedUser) -> Vec<String> {
+    user.claims_extra
+        .as_ref()
+        .and_then(|extra| extra.get("groups"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|g| g.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Get asset by ID
