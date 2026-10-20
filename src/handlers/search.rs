@@ -126,6 +126,7 @@ pub async fn search(
                     })
                     .collect(),
                 updated_at: a.updated_at,
+                created_at: a.created_at,
             })
             .collect();
 

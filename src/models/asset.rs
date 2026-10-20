@@ -97,6 +97,12 @@ pub struct SearchResult {
     pub tags: Vec<TagSummary>,
     #[serde(with = "datetime_format")]
     pub updated_at: DateTime<Utc>,
+    /// Birth-stamp — added v0.3.10 (fame bbb4882c): list consumers project
+    /// created_at from search results; the compact shape previously dropped
+    /// it, forcing downstream projections to fabricate updated_at into the
+    /// created_at field.
+    #[serde(with = "datetime_format")]
+    pub created_at: DateTime<Utc>,
 }
 
 /// Tag without internal metadata — suitable for list/search views

@@ -124,6 +124,12 @@ async fn sqlite_asset_search_with_tag_filter() {
 }
 
 #[tokio::test]
+async fn sqlite_asset_search_cursor_pagination_and_created_at() {
+    let (assets, _, _, _) = setup_repos().await;
+    common::asset_search_cursor_pagination_and_created_at(&assets).await;
+}
+
+#[tokio::test]
 async fn sqlite_asset_add_and_remove_tag() {
     let (assets, _, _, _) = setup_repos().await;
     common::asset_add_and_remove_tag(&assets).await;

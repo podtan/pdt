@@ -342,6 +342,63 @@ pub async fn asset_search_with_tag_filter<A: AssetRepository>(assets: &A) {
     );
 }
 
+/// Search cursor pagination + created_at presence (fame b3209637/bbb4882c
+/// backend contract): search pages follow the keyset cursor until the store
+/// is exhausted, no record repeats across pages, and every result carries
+/// the true birth-stamp (v0.3.10: compact search results expose created_at —
+/// downstream list projections read it instead of fabricating updated_at).
+pub async fn asset_search_cursor_pagination_and_created_at<A: AssetRepository>(assets: &A) {
+    for i in 0..3 {
+        assets
+            .create(
+                make_asset_request_with_tags(
+                    &format!("Cursor Page Doc {i}"),
+                    "cursor pagination body",
+                    vec![("type", "cursor-doc")],
+                ),
+                "user1",
+            )
+            .await
+            .unwrap();
+    }
+
+    let tag_filter = vec![("type".to_string(), "cursor-doc".to_string())];
+
+    // Page 1: limit 2 over 3 matching docs → 2 results + a next cursor.
+    let (page1, cursor1) = assets
+        .search(None, tag_filter.clone(), 2, None)
+        .await
+        .expect("page 1 should succeed");
+    assert_eq!(page1.len(), 2, "page 1 carries exactly the page size");
+    assert!(
+        cursor1.is_some(),
+        "3 matching docs at page size 2 must yield a next cursor"
+    );
+    for a in &page1 {
+        assert!(
+            !a.created_at.to_rfc3339().is_empty(),
+            "search result must carry created_at (v0.3.10)"
+        );
+    }
+
+    // Page 2: the cursor resumes where page 1 stopped.
+    let (page2, cursor2) = assets
+        .search(None, tag_filter, 2, cursor1.as_deref())
+        .await
+        .expect("page 2 should succeed");
+    assert_eq!(page2.len(), 1, "page 2 carries the remainder");
+    assert!(cursor2.is_none(), "store exhausted — no further cursor");
+
+    // Keyset cursor advances strictly — no record repeats across pages.
+    let ids1: std::collections::HashSet<&str> = page1.iter().map(|a| a.id.as_str()).collect();
+    for a in &page2 {
+        assert!(
+            !ids1.contains(a.id.as_str()),
+            "cursor pagination must not repeat records across pages"
+        );
+    }
+}
+
 pub async fn asset_add_and_remove_tag<A: AssetRepository>(assets: &A) {
     let created = assets
         .create(make_asset_request("Tag Test", "Content"), "user1")
