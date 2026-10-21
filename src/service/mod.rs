@@ -6,13 +6,17 @@
 mod asset_service;
 mod audit_service;
 mod collection_service;
+pub mod directory_service;
 pub mod relation_service;
+pub mod roles_service;
 mod search_service;
 
 pub use asset_service::AssetService;
 pub use audit_service::AuditService;
 pub use collection_service::CollectionService;
+pub use directory_service::DirectoryService;
 pub use relation_service::RelationService;
+pub use roles_service::RolesService;
 pub use search_service::SearchService;
 
 use std::sync::Arc;

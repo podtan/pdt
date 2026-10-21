@@ -45,6 +45,12 @@ use utoipa::OpenApi;
         crate::handlers::collections::remove_asset,
         // Search routes
         crate::handlers::search::search,
+        // Role model (1552c098) + directory name-map (4474a038) + maintenance
+        crate::handlers::roles::get_roles,
+        crate::handlers::directory::get_directory_entry,
+        crate::handlers::directory::upsert_directory_entry,
+        crate::handlers::directory::list_directory,
+        crate::handlers::maintenance::backfill,
         // Audit routes
         crate::handlers::audit::list_audit_entries,
         crate::handlers::audit::get_asset_history,
@@ -78,6 +84,10 @@ use utoipa::OpenApi;
         crate::models::AuditAction,
         crate::service::relation_service::GraphNode,
         crate::handlers::cedar::CedarPolicyResponse,
+        crate::models::roles::RoleAnswer,
+        crate::models::roles::MembershipRoleRow,
+        crate::models::directory::DirectoryEntry,
+        crate::models::directory::UpsertDirectoryRequest,
     )),
     tags(
         (name = "health", description = "Health check endpoints"),
@@ -85,6 +95,9 @@ use utoipa::OpenApi;
         (name = "relations", description = "Asset relationship management"),
         (name = "collections", description = "Asset collection management"),
         (name = "search", description = "Full-text search and discovery"),
+        (name = "roles", description = "Sub-keyed role resolution (membership + global)"),
+        (name = "directory", description = "Principal directory name-map (uuid → name/kind/email/role)"),
+        (name = "maintenance", description = "Admin-gated idempotent backfills"),
         (name = "audit", description = "Audit logging and history"),
         (name = "cedar", description = "Cedar policy store"),
     ),

@@ -23,7 +23,7 @@
                 "tags": [
                     "assets"
                 ],
-                "summary": "List assets with pagination",
+                "summary": "List assets with pagination\nAuth-degraded requests (enrichment failed \u2192 zero-attribute principal) answer\n503 auth_degraded instead of a lying 200-with-empty (issue 365be03f).",
                 "operationId": "list_assets",
                 "parameters": [
                     {
@@ -81,6 +81,9 @@
                                 }
                             }
                         }
+                    },
+                    "503": {
+                        "description": "Auth degraded \u2014 token claims could not be verified; body {error: auth_degraded, retryable: true}. Retry after re-authentication."
                     }
                 }
             },
@@ -545,6 +548,28 @@
                 }
             }
         },
+        "/api/cedar/policies": {
+            "get": {
+                "tags": [
+                    "cedar"
+                ],
+                "summary": "Get the current Cedar policies and schema.",
+                "description": "This endpoint allows other services to fetch PDT's policies via HTTP.\nThe response includes the policy text, schema text, and a version string.",
+                "operationId": "get_cedar_policies",
+                "responses": {
+                    "200": {
+                        "description": "Cedar policies and schema",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CedarPolicyResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/collections": {
             "get": {
                 "tags": [
@@ -793,6 +818,272 @@
                 }
             }
         },
+        "/api/directory": {
+            "get": {
+                "tags": [
+                    "directory"
+                ],
+                "summary": "List directory entries (paginated).",
+                "operationId": "list_directory",
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int64"
+                        }
+                    },
+                    {
+                        "name": "cursor",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Directory entries (paginated)"
+                    }
+                }
+            }
+        },
+        "/api/directory/{uuid}": {
+            "get": {
+                "tags": [
+                    "directory"
+                ],
+                "summary": "Resolve a principal uuid to its directory entry.",
+                "operationId": "get_directory_entry",
+                "parameters": [
+                    {
+                        "name": "uuid",
+                        "in": "path",
+                        "description": "Principal uuid to resolve",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Directory entry resolved",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DirectoryEntry"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Loud unresolved marker \u2014 no directory entry for this uuid (never fake names)"
+                    }
+                }
+            },
+            "put": {
+                "tags": [
+                    "directory"
+                ],
+                "summary": "Upsert a directory entry (import path for nghr employees, thq directory\nrows, tocpi user records). Idempotent by uuid.",
+                "operationId": "upsert_directory_entry",
+                "parameters": [
+                    {
+                        "name": "uuid",
+                        "in": "path",
+                        "description": "Principal uuid to upsert",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/UpsertDirectoryRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Directory entry upserted",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/DirectoryEntry"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Empty uuid"
+                    }
+                }
+            }
+        },
+        "/api/instances": {
+            "get": {
+                "tags": [
+                    "instances"
+                ],
+                "summary": "List all active instances (workspaces and children, flattened).",
+                "operationId": "list_instances",
+                "responses": {
+                    "200": {
+                        "description": "List of active instances",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/InstanceInfo"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/instances/tree": {
+            "get": {
+                "tags": [
+                    "instances"
+                ],
+                "summary": "List all provisioned instances as a workspace tree.",
+                "operationId": "list_instance_tree",
+                "responses": {
+                    "200": {
+                        "description": "Workspace tree of instances",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/InstanceTreeNode"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/instances/{instance_id}": {
+            "delete": {
+                "tags": [
+                    "instances"
+                ],
+                "summary": "Delete an instance and all of its nested children (recursive).",
+                "description": "Deleting a workspace removes `{instances_dir}/{workspace}/` including all\nchild databases. Deleting a child removes only that child's subtree.",
+                "operationId": "delete_instance",
+                "parameters": [
+                    {
+                        "name": "instance_id",
+                        "in": "path",
+                        "description": "Instance ID (UUID) to delete",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Instance deleted"
+                    },
+                    "400": {
+                        "description": "Invalid instance ID"
+                    },
+                    "404": {
+                        "description": "Instance not found"
+                    }
+                }
+            }
+        },
+        "/api/instances/{instance_id}/provision": {
+            "post": {
+                "tags": [
+                    "instances"
+                ],
+                "summary": "Provision a new instance database.",
+                "description": "Without `?parent=`: creates a top-level workspace at\n`{instances_dir}/{instance_id}/pdt.db`.\n\nWith `?parent={workspace-uuid}`: creates a child instance at\n`{instances_dir}/{parent}/{instance_id}/pdt.db`. The parent must already\nbe provisioned.",
+                "operationId": "provision_instance",
+                "parameters": [
+                    {
+                        "name": "instance_id",
+                        "in": "path",
+                        "description": "Instance ID (UUID) to provision",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "parent",
+                        "in": "query",
+                        "description": "Parent workspace UUID for nested instances",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "default": null
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "Instance provisioned successfully",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ProvisionResponse"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid instance ID or missing parent"
+                    },
+                    "500": {
+                        "description": "Provisioning failed"
+                    }
+                }
+            }
+        },
+        "/api/maintenance/backfill": {
+            "post": {
+                "tags": [
+                    "maintenance"
+                ],
+                "summary": "Run the idempotent backfills (roles + directory) against the live registry.",
+                "operationId": "backfill",
+                "responses": {
+                    "200": {
+                        "description": "Backfill summary (idempotent \u2014 re-runs clean)"
+                    },
+                    "403": {
+                        "description": "Requires role=admin (fail-closed)"
+                    }
+                }
+            }
+        },
         "/api/relations": {
             "post": {
                 "tags": [
@@ -888,12 +1179,50 @@
                 }
             }
         },
+        "/api/roles/{sub}": {
+            "get": {
+                "tags": [
+                    "roles"
+                ],
+                "summary": "Resolve roles for a sub \u2014 one lookup, both families.",
+                "operationId": "get_roles",
+                "parameters": [
+                    {
+                        "name": "sub",
+                        "in": "path",
+                        "description": "The token's stable subject (sub) to resolve",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Role answer (both families; empty membership + default global_role = authorize-nothing deny)",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RoleAnswer"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Empty sub"
+                    },
+                    "500": {
+                        "description": "Transport/DB failure \u2014 consumers fail closed"
+                    }
+                }
+            }
+        },
         "/api/search": {
             "get": {
                 "tags": [
                     "search"
                 ],
-                "summary": "Search assets \u2014 returns compact SearchResult by default, full Asset when full_content=true\nCedar filtering: assets the user cannot View are excluded from results.",
+                "summary": "Search assets \u2014 returns compact SearchResult by default, full Asset when full_content=true\nCedar filtering: assets the user cannot View are excluded from results.\nAuth-degraded requests (enrichment failed \u2192 zero-attribute principal) answer\n503 auth_degraded instead of a lying 200-with-empty (issue 365be03f).",
                 "operationId": "search",
                 "parameters": [
                     {
@@ -955,6 +1284,9 @@
                 "responses": {
                     "200": {
                         "description": "Search results (compact SearchResult by default, full Asset when full_content=true)"
+                    },
+                    "503": {
+                        "description": "Auth degraded \u2014 token claims could not be verified; body {error: auth_degraded, retryable: true}. Retry after re-authentication."
                     }
                 }
             }
@@ -1153,6 +1485,29 @@
                     }
                 }
             },
+            "CedarPolicyResponse": {
+                "type": "object",
+                "description": "Response from the Cedar policy store endpoint.",
+                "required": [
+                    "policy",
+                    "schema",
+                    "version"
+                ],
+                "properties": {
+                    "policy": {
+                        "type": "string",
+                        "description": "Cedar policy text (one or more `permit`/`forbid` statements)."
+                    },
+                    "schema": {
+                        "type": "string",
+                        "description": "Cedar schema text (entity and action declarations)."
+                    },
+                    "version": {
+                        "type": "string",
+                        "description": "Version identifier (content hash) for change detection."
+                    }
+                }
+            },
             "Collection": {
                 "type": "object",
                 "description": "Named collection of assets",
@@ -1219,7 +1574,7 @@
                             },
                             {
                                 "$ref": "#/components/schemas/AuthContext",
-                                "description": "Optional auth_context to set at creation time (overrides defaults).\nIf omitted, defaults to public/internal/empty."
+                                "description": "Optional auth_context to set at creation time.\nGUARD (0e583f06): an omitted or empty band never stores \u2014 creates\ndefault to the caller's cohort band (visibility=\"team\" + caller's\ngroups), or \"private\" (creator-only, loud WARN) when the caller has\nno groups claim. Explicit non-empty visibility is honored as-is."
                             }
                         ]
                     },
@@ -1298,6 +1653,47 @@
                     }
                 }
             },
+            "DirectoryEntry": {
+                "type": "object",
+                "description": "A resolved directory entry: display data for a principal uuid.",
+                "required": [
+                    "uuid"
+                ],
+                "properties": {
+                    "email": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Email (or the raw identifier when no email exists)."
+                    },
+                    "kind": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Principal kind: \"human\" | \"agent\" | \"service\"."
+                    },
+                    "name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Display name. `None` when no honest name is known \u2014 NEVER a fake name."
+                    },
+                    "role": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Role string (opaque; e.g. \"developer\", \"platform-services\")."
+                    },
+                    "uuid": {
+                        "type": "string",
+                        "description": "The principal uuid this entry resolves."
+                    }
+                }
+            },
             "GraphNode": {
                 "type": "object",
                 "description": "Node in the relationship graph",
@@ -1335,6 +1731,55 @@
                         "type": "string"
                     },
                     "version": {
+                        "type": "string"
+                    }
+                }
+            },
+            "InstanceInfo": {
+                "type": "object",
+                "description": "Simple response for instance list.",
+                "required": [
+                    "instance_id"
+                ],
+                "properties": {
+                    "instance_id": {
+                        "type": "string"
+                    }
+                }
+            },
+            "InstanceTreeNode": {
+                "type": "object",
+                "description": "A node in the instance tree.",
+                "required": [
+                    "workspace_id",
+                    "children"
+                ],
+                "properties": {
+                    "children": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Child instance IDs nested under this workspace (companies, agents)."
+                    },
+                    "workspace_id": {
+                        "type": "string"
+                    }
+                }
+            },
+            "MembershipRoleRow": {
+                "type": "object",
+                "description": "One workspace-membership role row resolved for a principal.",
+                "required": [
+                    "workspace_id",
+                    "role"
+                ],
+                "properties": {
+                    "role": {
+                        "type": "string",
+                        "description": "Opaque role string (owner | ws_admin | member) \u2014 consumers treat\nrole names opaquely (spec of record 2fea489c, shape decision)."
+                    },
+                    "workspace_id": {
                         "type": "string"
                     }
                 }
@@ -1575,6 +2020,26 @@
                     }
                 }
             },
+            "ProvisionResponse": {
+                "type": "object",
+                "description": "Response after provisioning an instance.",
+                "required": [
+                    "instance_id",
+                    "status",
+                    "message"
+                ],
+                "properties": {
+                    "instance_id": {
+                        "type": "string"
+                    },
+                    "message": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string"
+                    }
+                }
+            },
             "Relation": {
                 "type": "object",
                 "description": "Relationship between two assets",
@@ -1624,8 +2089,37 @@
                     "related_to",
                     "depends_on",
                     "supersedes",
-                    "complements"
+                    "complements",
+                    "has_instance",
+                    "has_agent",
+                    "has_access"
                 ]
+            },
+            "RoleAnswer": {
+                "type": "object",
+                "description": "Sub-keyed role answer \u2014 BOTH role families in ONE lookup (Bonyan rider\npoint 1, spec of record 2fea489c). pep caches the whole answer per sub.\n\nWire contract (rider point 2): a sub with zero roles \u2014 known or unknown \u2014\nanswers 200 with the least-privilege defaults (authorize-nothing deny);\nonly transport/5xx is a hard error that pep fails closed on. The two\nstates stay distinguishable on the wire. No time-of-check data in the\nanswer (rider point 4 \u2014 TTL honesty).",
+                "required": [
+                    "sub",
+                    "global_role",
+                    "membership"
+                ],
+                "properties": {
+                    "global_role": {
+                        "type": "string",
+                        "description": "Platform-level role (admin | agent | user). Defaults to user."
+                    },
+                    "membership": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/MembershipRoleRow"
+                        },
+                        "description": "Per-workspace membership rows (has_access metadata + has_instance\nownership). Empty = no membership rows."
+                    },
+                    "sub": {
+                        "type": "string",
+                        "description": "The sub the lookup was keyed by (echoed verbatim)."
+                    }
+                }
             },
             "SearchResult": {
                 "type": "object",
@@ -1634,11 +2128,17 @@
                     "_id",
                     "title",
                     "tags",
-                    "updated_at"
+                    "updated_at",
+                    "created_at"
                 ],
                 "properties": {
                     "_id": {
                         "type": "string"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Birth-stamp \u2014 added v0.3.10 (fame bbb4882c): list consumers project\ncreated_at from search results; the compact shape previously dropped\nit, forcing downstream projections to fabricate updated_at into the\ncreated_at field."
                     },
                     "snippet": {
                         "type": [
@@ -1740,6 +2240,10 @@
                 "type": "object",
                 "description": "Request to update the authorization context of an asset",
                 "properties": {
+                    "cascade": {
+                        "type": "boolean",
+                        "description": "When true, cascade auth_context to all descendant assets via relation graph"
+                    },
                     "confidentiality": {
                         "type": [
                             "string",
@@ -1780,6 +2284,37 @@
                         ]
                     }
                 }
+            },
+            "UpsertDirectoryRequest": {
+                "type": "object",
+                "description": "Request to upsert a directory entry (import path for nghr employees,\nthq directory rows, tocpi user records).",
+                "properties": {
+                    "email": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "kind": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Principal kind: \"human\" | \"agent\" | \"service\"."
+                    },
+                    "name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "role": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                }
             }
         }
     },
@@ -1805,8 +2340,24 @@
             "description": "Full-text search and discovery"
         },
         {
+            "name": "roles",
+            "description": "Sub-keyed role resolution (membership + global)"
+        },
+        {
+            "name": "directory",
+            "description": "Principal directory name-map (uuid \u2192 name/kind/email/role)"
+        },
+        {
+            "name": "maintenance",
+            "description": "Admin-gated idempotent backfills"
+        },
+        {
             "name": "audit",
             "description": "Audit logging and history"
+        },
+        {
+            "name": "cedar",
+            "description": "Cedar policy store"
         }
     ]
 }

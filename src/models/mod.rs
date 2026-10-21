@@ -4,7 +4,9 @@ mod asset;
 mod audit;
 mod auth_context;
 mod collection;
+pub mod directory;
 mod relation;
+pub mod roles;
 mod tag;
 
 pub use asset::{
@@ -16,7 +18,9 @@ pub use auth_context::AuthContext;
 pub use collection::{
     AddAssetRequest, Collection, CreateCollectionRequest, UpdateCollectionRequest,
 };
+pub use directory::{DirectoryEntry, UpsertDirectoryRequest};
 pub use relation::{CreateRelationRequest, Relation, RelationType};
+pub use roles::{MembershipRoleRow, RoleAnswer};
 pub use tag::{validate_category, validate_value, AddTagRequest, Tag};
 
 use serde::{Deserialize, Serialize};

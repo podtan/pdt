@@ -78,6 +78,9 @@ pub trait RelationRepository: Send + Sync {
     /// Get all relations for an asset (both directions).
     async fn get_asset_relations(&self, asset_id: &str) -> Result<Vec<Relation>>;
 
+    /// List all relations of a given type (backfill scans — 1552c098).
+    async fn list_by_type(&self, relation_type: &str) -> Result<Vec<Relation>>;
+
     /// Delete all relations involving an asset.
     async fn delete_by_asset(&self, asset_id: &str) -> Result<u64>;
 

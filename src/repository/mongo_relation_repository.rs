@@ -82,6 +82,19 @@ impl RelationRepository for MongoRelationRepository {
         Ok(relations)
     }
 
+    async fn list_by_type(&self, relation_type: &str) -> Result<Vec<Relation>> {
+        let filter = doc! { "relation_type": relation_type };
+
+        let mut cursor = self.db.relations().find(filter).await?;
+        let mut relations = Vec::new();
+
+        while let Some(relation) = cursor.try_next().await? {
+            relations.push(relation);
+        }
+
+        Ok(relations)
+    }
+
     async fn delete_by_asset(&self, asset_id: &str) -> Result<u64> {
         let filter = doc! {
             "$or": [

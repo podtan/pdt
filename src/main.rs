@@ -225,6 +225,23 @@ async fn main() -> anyhow::Result<()> {
         )
         // Search routes (with Cedar filtering)
         .route("/api/search", get(handlers::search::search))
+        // Role model (1552c098) — sub-keyed resolution for the PEP authz path
+        .route("/api/roles/{sub}", get(handlers::roles::get_roles))
+        // Directory name-map (4474a038) — uuid → {name, kind, email/role}
+        .route("/api/directory", get(handlers::directory::list_directory))
+        .route(
+            "/api/directory/{uuid}",
+            get(handlers::directory::get_directory_entry),
+        )
+        .route(
+            "/api/directory/{uuid}",
+            put(handlers::directory::upsert_directory_entry),
+        )
+        // Maintenance (admin-gated, idempotent backfills)
+        .route(
+            "/api/maintenance/backfill",
+            post(handlers::maintenance::backfill),
+        )
         // Audit routes
         .route("/api/audit", get(handlers::audit::list_audit_entries))
         .route(

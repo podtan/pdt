@@ -131,6 +131,22 @@ impl RelationRepository for SqliteRelationRepository {
         Ok(relations)
     }
 
+    async fn list_by_type(&self, relation_type: &str) -> Result<Vec<Relation>> {
+        let rows = sqlx::query_as::<_, RelationRow>(
+            "SELECT id, from_asset_id, to_asset_id, relation_type, metadata_json, created_at, created_by
+             FROM relations WHERE relation_type = ?",
+        )
+        .bind(relation_type)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut relations = Vec::with_capacity(rows.len());
+        for row in rows {
+            relations.push(self.hydrate_relation(&row).await?);
+        }
+        Ok(relations)
+    }
+
     async fn delete_by_asset(&self, asset_id: &str) -> Result<u64> {
         let result =
             sqlx::query("DELETE FROM relations WHERE from_asset_id = ? OR to_asset_id = ?")
