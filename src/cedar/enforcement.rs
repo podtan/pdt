@@ -434,3 +434,162 @@ mod created_by_delete_tests {
         assert!(allowed, "created_by Edit policy must keep working");
     }
 }
+
+#[cfg(test)]
+mod team_sub_keyed_tests {
+    //! Team permit sub/SPN-keyed arm regression tests (CPO ruling eda88e15,
+    //! 2026-10-23, branch (a)): exchanged/machine tokens carry NO groups
+    //! claim (6c8efe55 class) — a byte-exact principal-sub (or SPN) match in
+    //! owner_groups must grant View AND Edit independent of groups-claim
+    //! enrichment. The deny hit admins and agents alike; both directions
+    //! pinned here (sub-match ALLOW, non-match DENY — no widening).
+
+    use super::*;
+    use crate::models::AuthContext;
+    use pep::cedar::CedarConfig;
+    use std::path::PathBuf;
+
+    fn test_authorizer() -> CedarAuthorizer {
+        let config = CedarConfig {
+            policy_path: PathBuf::from("/nonexistent/policies.cedar"),
+            schema_path: None,
+            entities_path: None,
+            default_decision: Default::default(),
+            validate_on_load: true,
+            policy_store_url: None,
+            policy_store_token: None,
+            embedded_policy: Some(include_str!("../../policies/rbac.cedar")),
+            embedded_schema: Some(include_str!("../../policies/schema.cedarschema")),
+        };
+        CedarAuthorizer::new(config).expect("embedded policy loads")
+    }
+
+    /// Exchanged/machine token class: NO groups claim in extra at all.
+    fn claims_no_groups(sub: &str, role: &str, preferred_username: Option<&str>) -> JwtClaims {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "role".to_string(),
+            serde_json::Value::String(role.to_string()),
+        );
+        JwtClaims {
+            sub: sub.to_string(),
+            iss: "https://idp.tanbal.ir".to_string(),
+            aud: None,
+            exp: 9999999999,
+            iat: None,
+            email: Some(format!("{}@example.com", sub)),
+            name: None,
+            preferred_username: preferred_username.map(|s| s.to_string()),
+            extra,
+        }
+    }
+
+    fn team_asset(owner_groups: Vec<String>) -> Asset {
+        Asset {
+            id: "team-asset-1".to_string(),
+            title: "Team Asset".to_string(),
+            content: None,
+            tags: vec![],
+            metadata: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            created_by: "creator-1".to_string(),
+            updated_by: "creator-1".to_string(),
+            deleted_at: None,
+            auth_context: Some(AuthContext {
+                visibility: "team".to_string(),
+                owner_groups,
+                confidentiality: String::new(),
+            }),
+        }
+    }
+
+    /// THE CLASS (ruling acceptance): exchanged token with no groups claim,
+    /// sub ∈ owner_groups → View ALLOW.
+    #[tokio::test]
+    async fn sub_in_owner_groups_view_allowed_without_groups_claim() {
+        let authorizer = test_authorizer();
+        let asset = team_asset(vec!["30309a40-2588-4cb6-8bda-0f7ccafd8d95".to_string()]);
+        let claims = claims_no_groups("30309a40-2588-4cb6-8bda-0f7ccafd8d95", "user", None);
+        let allowed =
+            evaluate_permission(&authorizer, &claims, "View", &asset).expect("evaluation succeeds");
+        assert!(
+            allowed,
+            "byte-exact sub match in owner_groups must grant View for a groups-less token"
+        );
+    }
+
+    /// Edit carries the identical hole (root-cause 67ab6a29) — same arm.
+    #[tokio::test]
+    async fn sub_in_owner_groups_edit_allowed_without_groups_claim() {
+        let authorizer = test_authorizer();
+        let asset = team_asset(vec!["30309a40-2588-4cb6-8bda-0f7ccafd8d95".to_string()]);
+        let claims = claims_no_groups("30309a40-2588-4cb6-8bda-0f7ccafd8d95", "user", None);
+        let allowed =
+            evaluate_permission(&authorizer, &claims, "Edit", &asset).expect("evaluation succeeds");
+        assert!(
+            allowed,
+            "byte-exact sub match in owner_groups must grant Edit for a groups-less token"
+        );
+    }
+
+    /// Cross-principal attestation, non-admin direction (ruling: the deny
+    /// hit admins and agents alike): role=user, no groups, sub match → ALLOW.
+    #[tokio::test]
+    async fn non_admin_principal_sub_match_allowed() {
+        let authorizer = test_authorizer();
+        let asset = team_asset(vec!["agent-abc-123".to_string()]);
+        let claims = claims_no_groups("agent-abc-123", "user", None);
+        let allowed =
+            evaluate_permission(&authorizer, &claims, "View", &asset).expect("evaluation succeeds");
+        assert!(
+            allowed,
+            "non-admin principal with sub ∈ owner_groups must be allowed"
+        );
+    }
+
+    /// NO WIDENING: sub ∉ owner_groups and no groups claim → still DENY.
+    #[tokio::test]
+    async fn sub_not_in_owner_groups_still_denied() {
+        let authorizer = test_authorizer();
+        let asset = team_asset(vec!["someone-elses-sub".to_string()]);
+        let claims = claims_no_groups("30309a40-2588-4cb6-8bda-0f7ccafd8d95", "user", None);
+        let allowed =
+            evaluate_permission(&authorizer, &claims, "View", &asset).expect("evaluation succeeds");
+        assert!(
+            !allowed,
+            "sub not in owner_groups and no groups claim must stay denied — no widening"
+        );
+    }
+
+    /// SPN-keyed half of the ruling: owner_groups holding the principal's
+    /// SPN form (<account>@<issuer-domain>) matches without a groups claim.
+    #[tokio::test]
+    async fn spn_in_owner_groups_allowed_without_groups_claim() {
+        let authorizer = test_authorizer();
+        let asset = team_asset(vec!["zobde@idp.tanbal.ir".to_string()]);
+        let claims = claims_no_groups(
+            "30309a40-2588-4cb6-8bda-0f7ccafd8d95",
+            "user",
+            Some("zobde"),
+        );
+        let allowed =
+            evaluate_permission(&authorizer, &claims, "View", &asset).expect("evaluation succeeds");
+        assert!(allowed, "SPN-form match in owner_groups must grant View");
+    }
+
+    /// Existing groups-claim path regression guard: enrichment still works.
+    #[tokio::test]
+    async fn groups_claim_path_still_works() {
+        let authorizer = test_authorizer();
+        let asset = team_asset(vec!["developers".to_string()]);
+        let mut claims = claims_no_groups("30309a40-2588-4cb6-8bda-0f7ccafd8d95", "user", None);
+        claims.extra.insert(
+            "groups".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String("developers".to_string())]),
+        );
+        let allowed =
+            evaluate_permission(&authorizer, &claims, "View", &asset).expect("evaluation succeeds");
+        assert!(allowed, "groups-claim matching must keep working");
+    }
+}

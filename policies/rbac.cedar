@@ -84,7 +84,13 @@ permit(
     resource has created_by && principal in resource.created_by
 };
 
-// Team visibility: users in owner_groups can view team-scoped assets
+// Team visibility: users in owner_groups can view team-scoped assets.
+// Sub/SPN-keyed arm (CPO ruling eda88e15, 2026-10-23): a byte-exact
+// principal-sub (or SPN) match in owner_groups grants access independent
+// of the groups claim — exchanged/machine tokens carry no groups claim
+// (6c8efe55 class) and must not lose creator-declared access. owner_groups
+// is creator-declared/enforced-at-edit, so this grants nothing the creator
+// did not already list — no widening.
 permit(
     principal,
     action == Action::"View",
@@ -92,11 +98,17 @@ permit(
 ) when {
     resource has visibility && resource.visibility == "team"
     && resource has owner_groups
-    && principal has groups
-    && resource.owner_groups.containsAny(principal.groups)
+    && (
+        (principal has groups && resource.owner_groups.containsAny(principal.groups))
+        || (principal has sub && resource.owner_groups.contains(principal.sub))
+        || (principal has spn && resource.owner_groups.contains(principal.spn))
+    )
 };
 
-// Team edit: users in owner_groups can edit team-scoped assets
+// Team edit: users in owner_groups can edit team-scoped assets.
+// Sub/SPN-keyed arm (CPO ruling eda88e15, 2026-10-23): Edit carries the
+// identical hole to View — same sub/SPN arm, one policy change covering
+// both arms.
 permit(
     principal,
     action == Action::"Edit",
@@ -104,8 +116,11 @@ permit(
 ) when {
     resource has visibility && resource.visibility == "team"
     && resource has owner_groups
-    && principal has groups
-    && resource.owner_groups.containsAny(principal.groups)
+    && (
+        (principal has groups && resource.owner_groups.containsAny(principal.groups))
+        || (principal has sub && resource.owner_groups.contains(principal.sub))
+        || (principal has spn && resource.owner_groups.contains(principal.spn))
+    )
 };
 
 // Private visibility: only the creator can view

@@ -147,6 +147,35 @@ pub fn user_to_cedar_principal(claims: &JwtClaims) -> Entity {
         }
     }
 
+    // Sub/SPN-keyed matching (CPO ruling eda88e15, 2026-10-23): the team
+    // View/Edit permits consult a byte-exact principal-sub (or SPN) match
+    // in owner_groups, independent of the groups claim — exchanged/machine
+    // tokens carry no groups claim (6c8efe55 class) and must not lose
+    // creator-declared access. sub = the JWT sub verbatim; spn =
+    // <preferred_username>@<issuer-domain> when both are present (same
+    // derivation as tocpi's spn_domain). Harmless when it never matches:
+    // owner_groups is creator-declared, so the arm grants nothing new.
+    attrs.insert(
+        "sub".to_string(),
+        RestrictedExpression::new_string(claims.sub.clone()),
+    );
+    if let Some(ref username) = claims.preferred_username {
+        let domain = claims
+            .iss
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        if !domain.is_empty() {
+            attrs.insert(
+                "spn".to_string(),
+                RestrictedExpression::new_string(format!("{}@{}", username, domain)),
+            );
+        }
+    }
+
     let parents: HashSet<EntityUid> = HashSet::new();
     Entity::new(uid, attrs, parents).expect("Failed to build Cedar principal from claims")
 }
