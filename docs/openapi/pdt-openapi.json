@@ -1279,6 +1279,15 @@
                         "schema": {
                             "type": "boolean"
                         }
+                    },
+                    {
+                        "name": "snippet",
+                        "in": "query",
+                        "description": "When false, SKIP the content-fetch phase entirely \u2014 compact results\ncarry no snippet field (issue 3fd2d848: callers that never render\nsnippets \u2014 payam's channel walks \u2014 were paying one content-blob read\nper visible row on every search). Default: true (snippets fetched\nfor the visible page).",
+                        "required": false,
+                        "schema": {
+                            "type": "boolean"
+                        }
                     }
                 ],
                 "responses": {

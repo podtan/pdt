@@ -14,6 +14,10 @@ fn default_limit() -> i64 {
     20
 }
 
+fn default_snippet() -> bool {
+    true
+}
+
 /// Query parameters for search
 /// Note: pagination fields inlined to work around serde_urlencoded#33 (flat breaks numeric deserialize)
 #[derive(Debug, Deserialize, IntoParams)]
@@ -34,6 +38,13 @@ pub struct SearchParams {
     /// Default: false (returns compact SearchResult with snippet)
     #[serde(default)]
     pub full_content: bool,
+    /// When false, SKIP the content-fetch phase entirely — compact results
+    /// carry no snippet field (issue 3fd2d848: callers that never render
+    /// snippets — payam's channel walks — were paying one content-blob read
+    /// per visible row on every search). Default: true (snippets fetched
+    /// for the visible page).
+    #[serde(default = "default_snippet")]
+    pub snippet: bool,
 }
 
 /// Internal helper to build the common tag_filters from params
@@ -133,8 +144,16 @@ pub async fn search(
 
         let visible_assets = filter_visible(assets);
 
-        let ids: Vec<String> = visible_assets.iter().map(|a| a.id.clone()).collect();
-        let contents = SearchService::get_contents(tx.services(), &ids).await?;
+        // 3fd2d848: snippet=false skips the content fetch entirely —
+        // callers that never render snippets stop paying one blob read per
+        // visible row. SearchResult.snippet is Option — None serializes as
+        // an absent field.
+        let contents = if params.snippet {
+            let ids: Vec<String> = visible_assets.iter().map(|a| a.id.clone()).collect();
+            SearchService::get_contents(tx.services(), &ids).await?
+        } else {
+            std::collections::HashMap::new()
+        };
 
         let results: Vec<SearchResult> = visible_assets
             .into_iter()
