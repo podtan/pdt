@@ -426,3 +426,15 @@ async fn sqlite_search_still_finds_assets_through_sanitized_phrases() {
         "sanitized match must stay precise, not widen to everything"
     );
 }
+
+#[tokio::test]
+async fn sqlite_asset_search_compact_omits_content() {
+    let (assets, _, _, _) = setup_repos().await;
+    common::asset_search_compact_omits_content(&assets).await;
+}
+
+#[tokio::test]
+async fn sqlite_asset_get_contents_batch() {
+    let (assets, _, _, _) = setup_repos().await;
+    common::asset_get_contents_batch(&assets).await;
+}

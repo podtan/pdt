@@ -86,47 +86,75 @@ pub async fn search(
     let claims = crate::cedar::enforcement::extract_claims_for_cedar(&user);
     let tag_filters = parse_tag_filters(&params);
 
-    let (assets, next_cursor) = SearchService::search(
-        tx.services(),
-        params.q.as_deref(),
-        tag_filters,
-        params.limit,
-        params.cursor.as_deref(),
-    )
-    .await?;
-
-    // Filter assets by Cedar View permission
-    let visible_assets = if let Some(authorizer) = tx.authorizer() {
-        crate::cedar::enforcement::filter_by_permission(authorizer, &claims, "View", assets)
-    } else {
-        assets
+    // Batched Cedar filter (eea5bcff): one eval per distinct band tuple
+    // instead of one per row — a 904-row inbox was 904 Cedar evals per view.
+    let filter_visible = |assets: Vec<crate::models::Asset>| {
+        if let Some(authorizer) = tx.authorizer() {
+            crate::cedar::enforcement::filter_by_permission_batched(
+                authorizer, &claims, "View", assets,
+            )
+        } else {
+            assets
+        }
     };
 
     if params.full_content {
-        // Legacy behavior: return full assets
+        // Legacy behavior: full assets, content included in the page query.
+        let (assets, next_cursor) = SearchService::search(
+            tx.services(),
+            params.q.as_deref(),
+            tag_filters,
+            params.limit,
+            params.cursor.as_deref(),
+        )
+        .await?;
+
+        let visible_assets = filter_visible(assets);
+
         Ok(Json(serde_json::to_value(PaginatedResponse {
             data: visible_assets,
             next_cursor,
             total: None,
         })?))
     } else {
-        // New default: return compact search results
+        // Compact path (default): the page query carries NO content blobs —
+        // the old SELECT read every matched body off disk per search and the
+        // response discarded it (eea5bcff). Two-phase: page without content
+        // → batch-Cedar filter → one content fetch for the visible page
+        // (≤limit rows) → snippets from those bodies.
+        let (assets, next_cursor) = SearchService::search_compact(
+            tx.services(),
+            params.q.as_deref(),
+            tag_filters,
+            params.limit,
+            params.cursor.as_deref(),
+        )
+        .await?;
+
+        let visible_assets = filter_visible(assets);
+
+        let ids: Vec<String> = visible_assets.iter().map(|a| a.id.clone()).collect();
+        let contents = SearchService::get_contents(tx.services(), &ids).await?;
+
         let results: Vec<SearchResult> = visible_assets
             .into_iter()
-            .map(|a| SearchResult {
-                id: a.id,
-                title: a.title,
-                snippet: generate_snippet(a.content.as_deref().unwrap_or(""), 200),
-                tags: a
-                    .tags
-                    .into_iter()
-                    .map(|t| TagSummary {
-                        category: t.category,
-                        value: t.value,
-                    })
-                    .collect(),
-                updated_at: a.updated_at,
-                created_at: a.created_at,
+            .map(|a| {
+                let content = contents.get(&a.id).cloned().unwrap_or_default();
+                SearchResult {
+                    id: a.id,
+                    title: a.title,
+                    snippet: generate_snippet(&content, 200),
+                    tags: a
+                        .tags
+                        .into_iter()
+                        .map(|t| TagSummary {
+                            category: t.category,
+                            value: t.value,
+                        })
+                        .collect(),
+                    updated_at: a.updated_at,
+                    created_at: a.created_at,
+                }
             })
             .collect();
 

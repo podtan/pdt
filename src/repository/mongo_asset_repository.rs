@@ -3,6 +3,7 @@
 use bson::doc;
 use chrono::Utc;
 use futures::TryStreamExt;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::db::Database;
@@ -381,5 +382,22 @@ impl AssetRepository for MongoAssetRepository {
         }
 
         self.get_by_id(id).await
+    }
+
+    /// Batch content fetch for the compact-path second phase. Mongo has no
+    /// content-less compact projection (the trait default delegates to the
+    /// full `search`), so this re-reads only the visible page's docs —
+    /// ≤limit point reads instead of one per matched row. Absent and
+    /// soft-deleted ids are simply missing from the map.
+    async fn get_contents(&self, ids: &[String]) -> Result<HashMap<String, String>> {
+        let mut out = HashMap::new();
+        for id in ids {
+            if let Ok(asset) = self.get_by_id(id).await {
+                if let Some(c) = asset.content {
+                    out.insert(asset.id, c);
+                }
+            }
+        }
+        Ok(out)
     }
 }

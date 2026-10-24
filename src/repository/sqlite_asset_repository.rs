@@ -95,6 +95,68 @@ impl SqliteAssetRepository {
         }
         Ok(assets)
     }
+
+    /// Hydrate compact-page rows (no content column — content stays None;
+    /// the caller fetches bodies for the visible page via `get_contents`).
+    async fn hydrate_compact_assets(&self, rows: Vec<AssetCompactRow>) -> Result<Vec<Asset>> {
+        let mut assets = Vec::with_capacity(rows.len());
+        for row in &rows {
+            // Load tags
+            let tag_rows: Vec<TagRow> = sqlx::query_as::<_, TagRow>(
+                "SELECT id, category, value, added_by, added_at FROM tags WHERE asset_id = ?",
+            )
+            .bind(&row.id)
+            .fetch_all(&self.pool)
+            .await?;
+
+            let tags: Vec<Tag> = tag_rows
+                .into_iter()
+                .map(|t| Tag {
+                    id: t.id,
+                    category: t.category,
+                    value: t.value,
+                    added_by: t.added_by,
+                    added_at: parse_datetime(&t.added_at),
+                })
+                .collect();
+
+            // Compact path carries no metadata (the compact response shape
+            // has no metadata field).
+            let metadata: HashMap<String, serde_json::Value> = HashMap::new();
+
+            let auth_context = if row.visibility.is_some()
+                || row.confidentiality.is_some()
+                || row.owner_groups.is_some()
+            {
+                Some(AuthContext {
+                    visibility: row.visibility.clone().unwrap_or_default(),
+                    owner_groups: row
+                        .owner_groups
+                        .as_ref()
+                        .and_then(|g| serde_json::from_str(g).ok())
+                        .unwrap_or_default(),
+                    confidentiality: row.confidentiality.clone().unwrap_or_default(),
+                })
+            } else {
+                None
+            };
+
+            assets.push(Asset {
+                id: row.id.clone(),
+                title: row.title.clone(),
+                content: None,
+                tags,
+                metadata,
+                created_at: parse_datetime(&row.created_at),
+                updated_at: parse_datetime(&row.updated_at),
+                created_by: row.created_by.clone(),
+                updated_by: row.updated_by.clone(),
+                deleted_at: row.deleted_at.as_ref().map(|s| parse_datetime(s)),
+                auth_context,
+            });
+        }
+        Ok(assets)
+    }
 }
 
 /// Reduce a raw user search string to a safe FTS5 MATCH expression.
@@ -463,6 +525,125 @@ impl AssetRepository for SqliteAssetRepository {
         Ok((assets, next_cursor))
     }
 
+    /// Compact search: same matching, ordering, and pagination as `search`,
+    /// but the SELECT omits a.content and drops DISTINCT (issue eea5bcff).
+    ///
+    /// The compact response path only needs a snippet — the caller fetches
+    /// content for the visible page via `get_contents` in a second phase.
+    /// The old query read every matched body off disk per search and the
+    /// response discarded it; DISTINCT was pure dedupe-overhead on content
+    /// blobs — this query is a semi-join (EXISTS tag filters + FTS
+    /// `rowid IN`), it cannot multiply rows.
+    async fn search_compact(
+        &self,
+        query: Option<&str>,
+        tag_filters: Vec<(String, String)>,
+        limit: i64,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<Asset>, Option<String>)> {
+        let mut query_str = String::from(
+            "SELECT a.id, a.title, a.created_at, a.updated_at, a.created_by, a.updated_by, a.deleted_at, a.visibility, a.confidentiality, a.owner_groups
+             FROM assets a
+             WHERE a.deleted_at IS NULL",
+        );
+
+        // FTS5 MATCH via the same quoted-phrase reduction as `search`
+        // (build_fts_match_query — the Sep 7-8 expression-injection class).
+        let fts_query: Option<String> = query
+            .filter(|q| !q.is_empty())
+            .map(build_fts_match_query)
+            .filter(|q| !q.is_empty());
+        if fts_query.is_some() {
+            query_str.push_str(
+                " AND a.rowid IN (SELECT assets_fts.rowid FROM assets_fts WHERE assets_fts MATCH ?)",
+            );
+        }
+
+        for _ in &tag_filters {
+            query_str.push_str(
+                " AND EXISTS (SELECT 1 FROM tags t WHERE t.asset_id = a.id AND t.category = ? AND t.value = ?)",
+            );
+        }
+
+        if let Some(c) = cursor {
+            if let Some((date_str, id_part)) = c.split_once('|') {
+                query_str.push_str(" AND (a.updated_at < ? OR (a.updated_at = ? AND a.id < ?))");
+                let _ = (date_str, id_part);
+            } else {
+                query_str.push_str(" AND a.id < ?");
+            }
+        }
+
+        query_str.push_str(" ORDER BY a.updated_at DESC, a.id DESC LIMIT ?");
+
+        let mut q = sqlx::query_as::<_, AssetCompactRow>(&query_str);
+
+        if let Some(q_text) = &fts_query {
+            q = q.bind(q_text);
+        }
+
+        for (category, value) in &tag_filters {
+            q = q.bind(category).bind(value);
+        }
+
+        if let Some(c) = cursor {
+            if let Some((date_str, id_part)) = c.split_once('|') {
+                q = q.bind(date_str).bind(date_str).bind(id_part);
+            } else {
+                q = q.bind(c);
+            }
+        }
+
+        let rows = q.bind(limit + 1).fetch_all(&self.pool).await?;
+
+        let assets = self.hydrate_compact_assets(rows).await?;
+
+        let next_cursor = if assets.len() > limit as usize {
+            let trimmed = &assets[..limit as usize];
+            trimmed
+                .last()
+                .map(|a| format!("{}|{}", a.updated_at.to_rfc3339(), a.id))
+        } else {
+            None
+        };
+
+        let assets = if assets.len() > limit as usize {
+            assets[..limit as usize].to_vec()
+        } else {
+            assets
+        };
+
+        Ok((assets, next_cursor))
+    }
+
+    /// Batch content fetch for the compact-path second phase: one query for
+    /// the visible page's bodies instead of one per matched row. Absent and
+    /// soft-deleted ids are simply missing from the map.
+    async fn get_contents(&self, ids: &[String]) -> Result<HashMap<String, String>> {
+        let mut out = HashMap::new();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "SELECT id, content FROM assets WHERE id IN ({}) AND deleted_at IS NULL",
+            placeholders
+        );
+        let mut q = sqlx::query_as::<_, (String, Option<String>)>(&sql);
+        for id in ids {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+
+        for (id, content) in rows {
+            if let Some(c) = content {
+                out.insert(id, c);
+            }
+        }
+        Ok(out)
+    }
+
     async fn add_tag(&self, asset_id: &str, request: AddTagRequest, user_id: &str) -> Result<Tag> {
         // Verify asset exists
         self.get_by_id(asset_id).await?;
@@ -554,6 +735,23 @@ struct AssetRow {
     id: String,
     title: String,
     content: Option<String>,
+    created_at: String,
+    updated_at: String,
+    created_by: String,
+    updated_by: String,
+    deleted_at: Option<String>,
+    visibility: Option<String>,
+    confidentiality: Option<String>,
+    owner_groups: Option<String>,
+}
+
+/// Compact-page row: same columns as AssetRow minus content (issue eea5bcff
+/// — the compact path fetches bodies for the visible page in a second
+/// phase, so the page query stops reading every content blob off disk).
+#[derive(sqlx::FromRow)]
+struct AssetCompactRow {
+    id: String,
+    title: String,
     created_at: String,
     updated_at: String,
     created_by: String,

@@ -10,6 +10,7 @@ use crate::models::{
     UpdateCollectionRequest,
 };
 use async_trait::async_trait;
+use std::collections::HashMap;
 
 /// Repository for asset operations.
 #[async_trait]
@@ -44,6 +45,30 @@ pub trait AssetRepository: Send + Sync {
         limit: i64,
         cursor: Option<&str>,
     ) -> Result<(Vec<Asset>, Option<String>)>;
+
+    /// Compact search: same matching, ordering, and pagination as `search`,
+    /// but the page rows carry NO content. The compact response path only
+    /// needs a snippet, which the caller fetches for the visible page via
+    /// `get_contents` in a second phase (issue eea5bcff — the full-body
+    /// SELECT read every content blob off disk per search, then the response
+    /// discarded it).
+    ///
+    /// Default: delegate to `search` (backends without a content-less
+    /// projection return full rows; the second-phase fetch is then a no-op
+    /// overwrite with identical values).
+    async fn search_compact(
+        &self,
+        query: Option<&str>,
+        tag_filters: Vec<(String, String)>,
+        limit: i64,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<Asset>, Option<String>)> {
+        self.search(query, tag_filters, limit, cursor).await
+    }
+
+    /// Batch content fetch for a set of asset ids (compact-path second
+    /// phase). Absent and soft-deleted ids are simply missing from the map.
+    async fn get_contents(&self, ids: &[String]) -> Result<HashMap<String, String>>;
 
     /// Add a tag to an asset.
     async fn add_tag(

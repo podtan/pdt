@@ -1266,3 +1266,59 @@ pub async fn asset_delete_cascades<
         "audit should contain delete action"
     );
 }
+
+/// Compact search (issue eea5bcff): page rows must carry NO content — the
+/// caller fetches bodies for the visible page via `get_contents` in a
+/// second phase.
+pub async fn asset_search_compact_omits_content<A: AssetRepository>(assets: &A) {
+    let created = assets
+        .create(
+            make_asset_request(
+                "Compact Guide",
+                "Compact search body text for the snippet phase",
+            ),
+            "user1",
+        )
+        .await
+        .unwrap();
+
+    let (results, _) = assets
+        .search_compact(Some("compact"), vec![], 10, None)
+        .await
+        .expect("compact search should succeed");
+
+    assert!(
+        results.iter().any(|a| a.id == created.id),
+        "compact search must find the created asset"
+    );
+    assert!(
+        results.iter().all(|a| a.content.is_none()),
+        "compact page rows must carry NO content (second phase fetches bodies)"
+    );
+}
+
+/// Batch content fetch (compact-path second phase): existing ids return
+/// their bodies; absent ids are simply missing from the map.
+pub async fn asset_get_contents_batch<A: AssetRepository>(assets: &A) {
+    let a = assets
+        .create(make_asset_request("Content A", "body A"), "user1")
+        .await
+        .unwrap();
+    let b = assets
+        .create(make_asset_request("Content B", "body B"), "user1")
+        .await
+        .unwrap();
+
+    let ids = vec![a.id.clone(), b.id.clone(), "absent-id".to_string()];
+    let contents = assets
+        .get_contents(&ids)
+        .await
+        .expect("get_contents should succeed");
+
+    assert_eq!(contents.get(&a.id).map(|s| s.as_str()), Some("body A"));
+    assert_eq!(contents.get(&b.id).map(|s| s.as_str()), Some("body B"));
+    assert!(
+        !contents.contains_key("absent-id"),
+        "absent ids must be missing from the map"
+    );
+}
