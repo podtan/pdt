@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS tags (
 
 CREATE INDEX IF NOT EXISTS idx_tags_asset_id ON tags(asset_id);
 CREATE INDEX IF NOT EXISTS idx_tags_category_value ON tags(category, value);
+-- Covering index for the correlated tag-EXISTS search subquery
+-- (`WHERE t.asset_id = a.id AND t.category = ? AND t.value = ?`): one index
+-- seek per outer row instead of a (category,value)-range scan per outer row
+-- — the planner without this index could pick idx_tags_category_value and
+-- scan every matching (category,value) row per asset (observed 30.5s/49.8s
+-- slow-statement WARNs on the message-store walks, 2026-10-24).
+CREATE INDEX IF NOT EXISTS idx_tags_asset_id_category_value ON tags(asset_id, category, value);
 
 -- ============================================================================
 -- Asset Metadata (key-value pairs)

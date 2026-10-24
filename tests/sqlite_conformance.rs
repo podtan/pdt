@@ -438,3 +438,18 @@ async fn sqlite_asset_get_contents_batch() {
     let (assets, _, _, _) = setup_repos().await;
     common::asset_get_contents_batch(&assets).await;
 }
+
+#[tokio::test]
+async fn sqlite_tags_covering_index_exists() {
+    let pool = setup_sqlite().await;
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_tags_asset_id_category_value'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("index lookup should succeed");
+    assert_eq!(
+        row.0, 1,
+        "the tags covering index must exist after migrations (slow-tag-query fix)"
+    );
+}
