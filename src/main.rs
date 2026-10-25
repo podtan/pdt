@@ -242,6 +242,9 @@ async fn main() -> anyhow::Result<()> {
             "/api/maintenance/backfill",
             post(handlers::maintenance::backfill),
         )
+        // Retention prune (admin-gated; dry-run default, execution wire-gated
+        // on PDT_PRUNE_ENABLED — CPO ruling 8d591e85)
+        .route("/api/maintenance/prune", post(handlers::maintenance::prune))
         // Audit routes
         .route("/api/audit", get(handlers::audit::list_audit_entries))
         .route(

@@ -734,6 +734,29 @@ paths:
           description: Backfill summary (idempotent — re-runs clean)
         '403':
           description: Requires role=admin (fail-closed)
+  /api/maintenance/prune:
+    post:
+      tags:
+      - maintenance
+      summary: Retention prune — class filter (tag category+value) + age window + dry-run mode.
+      description: |-
+        Admin-gated. dry_run=true reports the numbers only (zero writes, always
+        available). dry_run=false executes the soft-delete prune — REFUSED with
+        403 unless PDT_PRUNE_ENABLED is set (CPO ruling 8d591e85: first execution
+        gated on the CPO's sight of the dry-run numbers; removal is soft-delete
+        only — archive-over-delete hard line, recoverable at the store).
+      operationId: prune
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PruneRequest'
+        required: true
+      responses:
+        '200':
+          description: Prune report (dry-run numbers or execution summary)
+        '403':
+          description: Requires role=admin, or execution refused (PDT_PRUNE_ENABLED unset)
   /api/relations:
     post:
       tags:
@@ -1078,6 +1101,31 @@ components:
           format: date-time
         updated_by:
           type: string
+    PruneRequest:
+      type: object
+      description: |-
+        Retention prune request — the policy lives in DATA (the retention policy
+        asset supplies these values at invocation time); the endpoint encodes
+        only the mechanics (data must not leak into code).
+      required:
+      - tag_category
+      - tag_value
+      - older_than_days
+      - dry_run
+      properties:
+        tag_category:
+          type: string
+          description: Tag CATEGORY to match (e.g. "type").
+        tag_value:
+          type: string
+          description: Tag VALUE to match (e.g. "report").
+        older_than_days:
+          type: integer
+          format: int32
+          description: Age window in days — assets whose created_at is older are candidates.
+        dry_run:
+          type: boolean
+          description: 'true = report the numbers only (zero writes). false = execute the soft-delete prune — REFUSED unless PDT_PRUNE_ENABLED is set.'
     CreateAssetRequest:
       type: object
       description: 'Request to create a new asset

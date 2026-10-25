@@ -1,5 +1,6 @@
 //! Asset service
 
+use chrono::Utc;
 use serde_json::json;
 
 use crate::error::{ApiError, Result};
@@ -334,6 +335,115 @@ impl AssetService {
             .await?;
 
         Ok(updated)
+    }
+
+    /// Retention prune candidates (CPO ruling 8d591e85, retention policy
+    /// b78efcd): assets carrying a tag (category, value) whose created_at is
+    /// older than the window. The policy LIVES IN DATA (the retention asset
+    /// supplies category/value/window at invocation time) — this code encodes
+    /// only the mechanics; nothing here may hardcode a policy window or class
+    /// (data must not leak into code).
+    ///
+    /// Cursor-walks the tag-filtered search to a hard cap (runaway-walk
+    /// guard) and reports truncation honestly.
+    pub async fn prune_candidates(
+        services: &Services,
+        tag_category: &str,
+        tag_value: &str,
+        older_than_days: u32,
+    ) -> Result<Vec<Asset>> {
+        const MAX_CANDIDATE_WALK: usize = 10_000;
+        let cutoff = Utc::now() - chrono::Duration::days(older_than_days as i64);
+        let mut candidates = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let (page, next) = services
+                .assets()
+                .search(
+                    None,
+                    vec![(tag_category.to_string(), tag_value.to_string())],
+                    500,
+                    cursor.as_deref(),
+                )
+                .await?;
+            for asset in page {
+                if asset.created_at < cutoff {
+                    candidates.push(asset);
+                    if candidates.len() >= MAX_CANDIDATE_WALK {
+                        return Ok(candidates);
+                    }
+                }
+            }
+            match next {
+                Some(c) => cursor = Some(c),
+                None => return Ok(candidates),
+            }
+        }
+    }
+
+    /// Retention prune (CPO ruling 8d591e85 — BINDING GATES, all four):
+    /// 1. ARCHIVE-OVER-DELETE hard line: removal is soft-delete ONLY
+    ///    (deleted_at stamp — recoverable at the store); never a hard delete.
+    /// 2. EXECUTION SOFT-DELETE-ONLY: every removal rides the full
+    ///    AssetService::delete path (soft_delete + relation cascade +
+    ///    collections cleanup + ONE audit entry) — no bare row kills.
+    /// 3. FIRST EXECUTION gated on the CPO's sight of the dry-run numbers:
+    ///    the WIRE gate is the handler's PDT_PRUNE_ENABLED check — this
+    ///    function refuses dry_run=false unless the caller already cleared
+    ///    it (defense-in-depth behind the handler gate).
+    /// 4. Scheduled+announced windows with pre-prune snapshots: procedural —
+    ///    the dry-run report exists to be sighted and announced.
+    pub async fn prune(
+        services: &Services,
+        tag_category: &str,
+        tag_value: &str,
+        older_than_days: u32,
+        dry_run: bool,
+        user_id: &str,
+    ) -> Result<serde_json::Value> {
+        let candidates =
+            Self::prune_candidates(services, tag_category, tag_value, older_than_days).await?;
+        let matched = candidates.len();
+
+        if dry_run {
+            // Dry-run: the numbers only. Zero writes, zero audits.
+            let listed: Vec<serde_json::Value> = candidates
+                .iter()
+                .take(100)
+                .map(|a| {
+                    json!({
+                        "id": a.id,
+                        "title": a.title,
+                        "created_at": a.created_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            return Ok(json!({
+                "dry_run": true,
+                "matched": matched,
+                "filter": {"tag_category": tag_category, "tag_value": tag_value},
+                "older_than_days": older_than_days,
+                "candidates": listed,
+            }));
+        }
+
+        // Execute: soft-delete-only, full cascade + audit per asset.
+        let mut pruned = 0u64;
+        let mut failed: Vec<String> = Vec::new();
+        for asset in &candidates {
+            match Self::delete(services, &asset.id, user_id).await {
+                Ok(()) => pruned += 1,
+                Err(_) => failed.push(asset.id.clone()),
+            }
+        }
+        Ok(json!({
+            "dry_run": false,
+            "matched": matched,
+            "pruned": pruned,
+            "failed": failed,
+            "filter": {"tag_category": tag_category, "tag_value": tag_value},
+            "older_than_days": older_than_days,
+        }))
     }
 }
 

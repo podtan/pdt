@@ -453,3 +453,185 @@ async fn sqlite_tags_covering_index_exists() {
         "the tags covering index must exist after migrations (slow-tag-query fix)"
     );
 }
+
+// ============================================================================
+// RETENTION PRUNE SERVICE TESTS (CPO ruling 8d591e85 — build-only deliverable,
+// first execution gated on the CPO's sight of the dry-run numbers)
+// ============================================================================
+
+use pdt::service::AssetService;
+use pdt::service::Services;
+
+async fn setup_services() -> Services {
+    let (assets, relations, collections, audit) = setup_repos().await;
+    Services::from_repositories(assets, relations, collections, audit)
+}
+
+#[tokio::test]
+async fn prune_dry_run_reports_numbers_zero_writes() {
+    let services = setup_services().await;
+    let user = "test-user";
+    for i in 0..3 {
+        AssetService::create(
+            &services,
+            common::make_asset_request_with_tags(
+                &format!("old report {}", i),
+                "body",
+                vec![("type", "report")],
+            ),
+            user,
+            &[],
+        )
+        .await
+        .expect("seed asset");
+    }
+    AssetService::create(
+        &services,
+        common::make_asset_request_with_tags("keep me", "body", vec![("type", "invoice")]),
+        user,
+        &[],
+    )
+    .await
+    .expect("seed other-class asset");
+
+    let report = AssetService::prune(&services, "type", "report", 0, true, user)
+        .await
+        .expect("dry-run prune");
+    assert_eq!(report["dry_run"], serde_json::json!(true));
+    assert_eq!(report["matched"], serde_json::json!(3));
+    assert_eq!(report["filter"]["tag_category"], serde_json::json!("type"));
+    assert_eq!(report["filter"]["tag_value"], serde_json::json!("report"));
+
+    // Zero writes: every candidate still live on the read surface.
+    let (listed, _) = services
+        .assets()
+        .search(None, vec![("type".into(), "report".into())], 100, None)
+        .await
+        .expect("post-dry-run search");
+    assert_eq!(listed.len(), 3, "dry-run must not write");
+    // Zero NEW audits: the seed creates audited (4 entries) — the dry-run
+    // itself must add none.
+    let (audits_before, _) = services
+        .audit()
+        .list(None, None, None, 100, None)
+        .await
+        .expect("audit list before");
+    let report2 = AssetService::prune(&services, "type", "report", 0, true, user)
+        .await
+        .expect("second dry-run prune");
+    assert_eq!(report2["matched"], serde_json::json!(3));
+    let (audits_after, _) = services
+        .audit()
+        .list(None, None, None, 100, None)
+        .await
+        .expect("audit list after");
+    assert_eq!(
+        audits_after.len(),
+        audits_before.len(),
+        "dry-run must not audit"
+    );
+}
+
+#[tokio::test]
+async fn prune_execute_is_soft_delete_only_with_audit() {
+    let services = setup_services().await;
+    let user = "test-user";
+    let a = AssetService::create(
+        &services,
+        common::make_asset_request_with_tags("old report", "body", vec![("type", "report")]),
+        user,
+        &[],
+    )
+    .await
+    .expect("seed candidate");
+    let b = AssetService::create(
+        &services,
+        common::make_asset_request_with_tags("keep me", "body", vec![("type", "invoice")]),
+        user,
+        &[],
+    )
+    .await
+    .expect("seed other-class asset");
+
+    let report = AssetService::prune(&services, "type", "report", 0, false, user)
+        .await
+        .expect("execute prune");
+    assert_eq!(report["dry_run"], serde_json::json!(false));
+    assert_eq!(report["matched"], serde_json::json!(1));
+    assert_eq!(report["pruned"], serde_json::json!(1));
+    assert_eq!(report["failed"], serde_json::json!([]));
+
+    // Gone from the live surface...
+    assert!(
+        services.assets().get_by_id(&a.id).await.is_err(),
+        "pruned asset must leave the live read surface"
+    );
+    // ...but recoverable at the store (archive-over-delete hard line —
+    // soft-delete stamp, never a hard delete).
+    assert!(
+        services.assets().exists(&a.id).await.expect("exists probe"),
+        "pruned asset must remain at the store (soft-delete-only)"
+    );
+    // Other-class asset untouched.
+    assert!(services.assets().get_by_id(&b.id).await.is_ok());
+
+    // Audit trail: the delete is on the record (full cascade path).
+    let (audits, _) = services
+        .audit()
+        .list(Some("asset"), Some(&a.id), None, 100, None)
+        .await
+        .expect("audit list");
+    assert!(
+        audits
+            .iter()
+            .any(|e| e.action == pdt::models::AuditAction::Delete),
+        "prune execution must audit each removal"
+    );
+}
+
+#[tokio::test]
+async fn prune_age_filter_matches_only_older_than_window() {
+    let pool = setup_sqlite().await;
+    let services = Services::from_repositories(
+        SqliteAssetRepository::new(pool.clone()),
+        SqliteRelationRepository::new(pool.clone()),
+        SqliteCollectionRepository::new(pool.clone()),
+        SqliteAuditRepository::new(pool.clone()),
+    );
+    let user = "test-user";
+    let old = AssetService::create(
+        &services,
+        common::make_asset_request_with_tags("old report", "body", vec![("type", "report")]),
+        user,
+        &[],
+    )
+    .await
+    .expect("seed old asset");
+    let fresh = AssetService::create(
+        &services,
+        common::make_asset_request_with_tags("fresh report", "body", vec![("type", "report")]),
+        user,
+        &[],
+    )
+    .await
+    .expect("seed fresh asset");
+
+    // Backdate the old asset directly — the test owns the pool.
+    let backdated = (chrono::Utc::now() - chrono::Duration::days(45)).to_rfc3339();
+    sqlx::query("UPDATE assets SET created_at = ? WHERE id = ?")
+        .bind(&backdated)
+        .bind(&old.id)
+        .execute(&pool)
+        .await
+        .expect("backdate created_at");
+
+    // 30-day window: only the backdated asset is a candidate.
+    let report = AssetService::prune(&services, "type", "report", 30, true, user)
+        .await
+        .expect("dry-run with age window");
+    assert_eq!(report["matched"], serde_json::json!(1));
+    let candidates = report["candidates"].as_array().expect("candidates array");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["id"], serde_json::json!(old.id));
+    assert_ne!(candidates[0]["id"], serde_json::json!(fresh.id));
+}
