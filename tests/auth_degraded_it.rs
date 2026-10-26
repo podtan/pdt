@@ -51,6 +51,14 @@ enum UserinfoMode {
     /// 503 — transient upstream (pep: retryable=true) → expect the exact
     /// 503 {"error":"auth_degraded","retryable":true} contract (365be03f).
     Reject503,
+    /// 200 with NO groups/role — the exchanged-token shape (RFC 8693, the
+    /// 6c8efe55 class): the IdP answers userinfo fine but the principal has
+    /// no group/role material. Enrichment lands Ok-but-empty → Degraded
+    /// marker; the maintenance admin gate must fall back to the registry
+    /// (CPO precondition 1, routing 0ae73f46).
+    Empty200,
+    /// 200 with role=admin — the enriched-admin control (token-claim path).
+    OkAdmin,
 }
 
 struct MockIdp {
@@ -139,6 +147,16 @@ async fn spawn_mock_idp() -> MockIdp {
                         UserinfoMode::Reject503 => http_response(
                             "503 Service Unavailable",
                             r#"{"error":"temporarily_unavailable"}"#,
+                        ),
+                        // The exchanged-token shape: userinfo answers fine but
+                        // carries NO identity material (6c8efe55 class).
+                        UserinfoMode::Empty200 => {
+                            http_response("200 OK", r#"{"sub":"ignored"}"#)
+                        }
+                        // The enriched-admin control: role=admin in claims.
+                        UserinfoMode::OkAdmin => http_response(
+                            "200 OK",
+                            r#"{"sub":"ignored","groups":["plt-agents"],"role":"admin"}"#,
                         ),
                     }
                 } else {
@@ -598,4 +616,171 @@ async fn born_empty_create_defaults_to_cohort_band_and_is_visible_to_cohort() {
         "explicit non-empty visibility must be honored as-is"
     );
     eprintln!("OBSERVED explicit public honored as-is");
+}
+
+// ─────────────────── the role-gate registry fallback ───────────────────
+
+/// REAL-BINARY IT GATE — the maintenance admin gate falls back to the PDT
+/// registry for claim-less exchanged tokens (CPO precondition 1, routing
+/// 0ae73f46; the 6c8efe55 exchanged-token-no-claims class).
+///
+/// The class being closed: RFC 8693 exchange tokens (thq_admin-minted PAT,
+/// aud=pdt-api) carry NO role/groups claims, and the userinfo merge for them
+/// lands empty too — the token-claim admin gate alone 403s real admins
+/// (paydar's finding: groups=[] despite ff766ee2 ∈ pdt-api-admins). The fix:
+/// the gate falls back to RolesService (the registry-backed global_role —
+/// the data-backed source the backfill syncs). Fail-closed preserved: no
+/// token role AND no registry admin role = 403.
+///
+/// Phases (fresh-sub-per-phase is load-bearing — pep caches userinfo by sub):
+///   seed      — enriched principal (userinfo Ok) stamps the registry:
+///               user asset for ADMIN_SUB with sub tag + global_role=admin,
+///               user asset for PLAIN_SUB with sub tag + global_role=user.
+///   exchanged — userinfo Empty200 (the exchange shape); claim-less tokens:
+///               ADMIN_SUB  → prune dry-run 200 (registry fallback says admin)
+///               PLAIN_SUB  → 403 (registry says user — fail-closed preserved)
+///               NOBODY_SUB → 403 (no registry asset — fail-closed preserved)
+#[tokio::test]
+async fn role_gate_falls_back_to_registry_for_claimless_admin_tokens() {
+    let idp = spawn_mock_idp().await;
+    let pdt = spawn_pdt(&idp).await;
+    let client = wait_health(&pdt.base).await;
+    eprintln!("OBSERVED pdt up at {} (mock IdP {})", pdt.base, idp.base);
+
+    let admin_sub = "role-gate-admin-0ae73f46";
+    let plain_sub = "role-gate-plain-0ae73f46";
+    let nobody_sub = "role-gate-nobody-0ae73f46";
+    let auth = |sub: &str| format!("Bearer {}", sign_token(&idp.base, sub));
+
+    // ── seed phase: enriched principal (userinfo Ok, role=member) stamps
+    // the registry — Create + Tag are open to all authenticated principals.
+    async fn seed_principal(
+        client: &reqwest::Client,
+        base: &str,
+        bearer: &str,
+        sub: &str,
+        global_role: &str,
+    ) {
+        let resp = client
+            .post(format!("{base}/api/assets"))
+            .header("Authorization", bearer)
+            .json(&serde_json::json!({
+                "title": format!("principal asset {sub}"),
+                "content": "role-gate registry seed",
+                "auth_context": {"visibility": "public", "owner_groups": []},
+            }))
+            .send()
+            .await
+            .expect("seed principal create");
+        assert!(
+            resp.status().is_success(),
+            "seed create must succeed (got {})",
+            resp.status()
+        );
+        let created: serde_json::Value = resp.json().await.expect("seed create body");
+        let asset_id = created["_id"]
+            .as_str()
+            .expect("asset id (Asset serializes id as _id)")
+            .to_string();
+        for (category, value) in [("sub", sub), ("global_role", global_role)] {
+            let resp = client
+                .post(format!("{base}/api/assets/{asset_id}/tags"))
+                .header("Authorization", bearer)
+                .json(&serde_json::json!({"category": category, "value": value}))
+                .send()
+                .await
+                .expect("seed add_tag");
+            assert!(
+                resp.status().is_success(),
+                "seed add_tag {category} must succeed (got {})",
+                resp.status()
+            );
+        }
+    }
+
+    seed_principal(&client, &pdt.base, &auth("seed-agent"), admin_sub, "admin").await;
+    seed_principal(&client, &pdt.base, &auth("seed-agent-2"), plain_sub, "user").await;
+    eprintln!("OBSERVED registry seeded: admin_sub + plain_sub principal assets");
+
+    // ── exchanged phase: userinfo Empty200 — the RFC 8693 exchange shape.
+    // The claim-less token (sign_token mints Kanidm-style, no identity
+    // claims) enriches to EMPTY → Degraded marker → the gate must fall
+    // back to the registry.
+    idp.set_mode(UserinfoMode::Empty200);
+
+    let prune_body = serde_json::json!({
+        "tag_category": "type",
+        "tag_value": "noise",
+        "older_than_days": 14,
+        "dry_run": true,
+    });
+
+    // THE FIX: claim-less ADMIN_SUB → registry fallback says admin → 200.
+    let resp = client
+        .post(format!("{}/api/maintenance/prune", pdt.base))
+        .header("Authorization", auth(admin_sub))
+        .json(&prune_body)
+        .send()
+        .await
+        .expect("claimless admin prune dry-run");
+    let status = resp.status();
+    assert_eq!(
+        status,
+        reqwest::StatusCode::OK,
+        "claim-less token with registry global_role=admin must pass the admin gate \
+         via the registry fallback (the 6c8efe55 class closed end-to-end)"
+    );
+    let body: serde_json::Value = resp.json().await.expect("prune dry-run body");
+    assert_eq!(body["dry_run"], serde_json::json!(true));
+    eprintln!(
+        "OBSERVED claim-less admin token → prune dry-run 200 (registry fallback fired; policy_loaded={})",
+        body["policy_loaded"]
+    );
+
+    // Control 1: claim-less PLAIN_SUB → registry says user → 403 (fail-closed).
+    let resp = client
+        .post(format!("{}/api/maintenance/prune", pdt.base))
+        .header("Authorization", auth(plain_sub))
+        .json(&prune_body)
+        .send()
+        .await
+        .expect("claimless plain prune dry-run");
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::FORBIDDEN,
+        "claim-less token with registry global_role=user must stay 403 (fail-closed preserved)"
+    );
+    eprintln!("OBSERVED claim-less user-role token → 403 (fail-closed preserved)");
+
+    // Control 2: claim-less NOBODY_SUB → no registry asset → 403.
+    let resp = client
+        .post(format!("{}/api/maintenance/prune", pdt.base))
+        .header("Authorization", auth(nobody_sub))
+        .json(&prune_body)
+        .send()
+        .await
+        .expect("claimless nobody prune dry-run");
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::FORBIDDEN,
+        "claim-less token with NO registry asset must stay 403 (least-privilege default)"
+    );
+    eprintln!("OBSERVED claim-less unknown-sub token → 403 (least-privilege default)");
+
+    // Control 3: the token-claim path still works — an ENRICHED admin token
+    // (userinfo Ok, role=admin) passes without touching the registry.
+    idp.set_mode(UserinfoMode::OkAdmin);
+    let resp = client
+        .post(format!("{}/api/maintenance/prune", pdt.base))
+        .header("Authorization", auth("enriched-admin"))
+        .json(&prune_body)
+        .send()
+        .await
+        .expect("enriched admin prune dry-run");
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::OK,
+        "enriched role=admin token must still pass (token-claim path unchanged)"
+    );
+    eprintln!("OBSERVED enriched role=admin token → 200 (token-claim path unchanged)");
 }
