@@ -29,10 +29,12 @@
           {
             "name": "limit",
             "in": "query",
+            "description": "Page size — server-side default: 20 (page 1 = the 20 newest by\nsort order; follow next_cursor for more). Caller-controlled: no\nserver-side maximum. Documented in the spec (issue b040d645 (d)).",
             "required": false,
             "schema": {
               "type": "integer",
-              "format": "int64"
+              "format": "int64",
+              "default": 20
             }
           },
           {
@@ -1106,7 +1108,7 @@
             "description": "Prune report (dry-run numbers or execution summary)"
           },
           "403": {
-            "description": "Requires role=admin, or execution refused (PDT_PRUNE_ENABLED unset)"
+            "description": "Requires role=admin (token claim or registry global_role); execution refused when PDT_PRUNE_ENABLED unset, or the class is not policy-cleared (archive-only class, window below policy, or class absent from PDT_PRUNE_POLICY_PATH)"
           }
         }
       }
@@ -1255,10 +1257,12 @@
           {
             "name": "limit",
             "in": "query",
+            "description": "Page size — server-side default: 20 (page 1 = the 20 newest by\nupdated_at DESC; follow next_cursor for more). Caller-controlled:\nno server-side maximum. Documented in the spec (issue b040d645 (d):\nthe default was integrator-invisible).",
             "required": false,
             "schema": {
               "type": "integer",
-              "format": "int64"
+              "format": "int64",
+              "default": 20
             }
           },
           {
@@ -1289,7 +1293,7 @@
           {
             "name": "tags",
             "in": "query",
-            "description": "Multiple tag filters (repeated param: tag=type:doc&tag=status:draft)",
+            "description": "Multiple tag filters. Every wire form is accepted (issues 12d3cb6a +\nb040d645 (c): serde_urlencoded has no sequence support — each value\narrives as ONE string, so `Vec<String>` 400'd on every form the\nbridge emitted): a JSON-array string (the bridge's lossless form,\n`tags=%5B%22a%22%2C%22b%22%5D`), a comma-separated string (the `tag`\nparam's documented convention, `tags=a,b`), or a true sequence.",
             "required": false,
             "schema": {
               "type": "array",
@@ -2088,7 +2092,7 @@
         "properties": {
           "dry_run": {
             "type": "boolean",
-            "description": "true = report the numbers only (zero writes). false = execute the\nsoft-delete prune — REFUSED unless PDT_PRUNE_ENABLED is set."
+            "description": "true = report the numbers only (zero writes). false = execute the\nsoft-delete prune — REFUSED unless PDT_PRUNE_ENABLED is set AND the\nclass is policy-cleared (PDT_PRUNE_POLICY_PATH)."
           },
           "older_than_days": {
             "type": "integer",

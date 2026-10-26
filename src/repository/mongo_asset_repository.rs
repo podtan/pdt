@@ -318,6 +318,77 @@ impl AssetRepository for MongoAssetRepository {
         Ok((assets, next_cursor))
     }
 
+    /// Count assets matching the search filter — the true total for
+    /// PaginatedResponse (issue b040d645). Same filter shape as `search`
+    /// ($text + tag $elemMatch), cursor-independent.
+    async fn count_search(
+        &self,
+        query: Option<&str>,
+        tag_filters: &[(String, String)],
+    ) -> Result<u64> {
+        let mut filter = doc! { "deleted_at": { "$exists": false } };
+
+        if let Some(q) = query {
+            if !q.is_empty() {
+                let search_query = if q.contains(' ') && !q.starts_with('"') {
+                    q.split_whitespace()
+                        .map(|w| {
+                            if w.starts_with('+') || w.starts_with('-') {
+                                w.to_string()
+                            } else {
+                                format!("+{}", w)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    q.to_string()
+                };
+                filter.insert("$text", doc! { "$search": search_query });
+            }
+        }
+
+        if !tag_filters.is_empty() {
+            let mut tag_conditions = Vec::new();
+            for (category, value) in tag_filters {
+                tag_conditions.push(doc! {
+                    "tags": {
+                        "$elemMatch": {
+                            "category": category,
+                            "value": value
+                        }
+                    }
+                });
+            }
+            filter.insert("$and", tag_conditions);
+        }
+
+        let count = self.db.assets().count_documents(filter).await?;
+        Ok(count)
+    }
+
+    /// Count assets matching the list filter — the true total for
+    /// /api/assets PaginatedResponse (issue b040d645). Same filter shape as
+    /// `list` (asset_type $elemMatch), cursor-independent.
+    async fn count_list(&self, asset_type_tag: Option<&str>) -> Result<u64> {
+        let mut filter = doc! { "deleted_at": { "$exists": false } };
+
+        if let Some(at) = asset_type_tag {
+            filter.insert(
+                "tags",
+                doc! {
+                    "$elemMatch": {
+                        "category": "asset_type",
+                        "value": at
+                    }
+                },
+            );
+        }
+
+        let count = self.db.assets().count_documents(filter).await?;
+        Ok(count)
+    }
+
     async fn add_tag(&self, asset_id: &str, request: AddTagRequest, user_id: &str) -> Result<Tag> {
         // Verify asset exists
         self.get_by_id(asset_id).await?;

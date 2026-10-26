@@ -66,6 +66,25 @@ pub trait AssetRepository: Send + Sync {
         self.search(query, tag_filters, limit, cursor).await
     }
 
+    /// Count assets matching the search filter (text query + tag filters) —
+    /// the true total for PaginatedResponse (issue b040d645: the field
+    /// existed but was never populated; boards rendered page-local counts
+    /// as if they were the whole set). Cursor-independent: counts ALL
+    /// matches in the store, not just this page. Pre-visibility: the count
+    /// reflects the filter, not the caller's Cedar view (documented in the
+    /// spec; the visibility guard protects content, and the pagination
+    /// envelope is already cursor-over-the-store).
+    async fn count_search(
+        &self,
+        query: Option<&str>,
+        tag_filters: &[(String, String)],
+    ) -> Result<u64>;
+
+    /// Count assets matching the list filter (asset_type tag) — the true
+    /// total for /api/assets PaginatedResponse (issue b040d645).
+    /// Cursor-independent, pre-visibility — same semantics as count_search.
+    async fn count_list(&self, asset_type_tag: Option<&str>) -> Result<u64>;
+
     /// Batch content fetch for a set of asset ids (compact-path second
     /// phase). Absent and soft-deleted ids are simply missing from the map.
     async fn get_contents(&self, ids: &[String]) -> Result<HashMap<String, String>>;

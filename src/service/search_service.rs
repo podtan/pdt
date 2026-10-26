@@ -46,4 +46,16 @@ impl SearchService {
     ) -> Result<HashMap<String, String>> {
         services.assets().get_contents(ids).await
     }
+
+    /// Count assets matching the search filter — the true total for
+    /// PaginatedResponse (issue b040d645: the field existed but was never
+    /// populated; boards rendered page-local counts as if they were the
+    /// whole set). Cursor-independent, pre-visibility.
+    pub async fn count(
+        services: &Services,
+        query: Option<&str>,
+        tag_filters: &[(String, String)],
+    ) -> Result<u64> {
+        services.assets().count_search(query, tag_filters).await
+    }
 }

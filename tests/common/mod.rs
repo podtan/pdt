@@ -1322,3 +1322,117 @@ pub async fn asset_get_contents_batch<A: AssetRepository>(assets: &A) {
         "absent ids must be missing from the map"
     );
 }
+
+// ============================================================================
+// COUNT / TRUE-TOTAL TESTS (issue b040d645)
+// ============================================================================
+
+pub async fn asset_count_search_matches_filter<A: AssetRepository>(assets: &A) {
+    // Issue b040d645 (b): the true total — cursor-independent, matches the
+    // filter, not the page.
+    assets
+        .create(
+            make_asset_request_with_tags(
+                "Count Doc 1",
+                "countable body",
+                vec![("type", "countprobe")],
+            ),
+            "user1",
+        )
+        .await
+        .unwrap();
+    assets
+        .create(
+            make_asset_request_with_tags(
+                "Count Doc 2",
+                "countable body",
+                vec![("type", "countprobe")],
+            ),
+            "user1",
+        )
+        .await
+        .unwrap();
+    assets
+        .create(
+            make_asset_request_with_tags("Count Other", "other body", vec![("type", "other")]),
+            "user1",
+        )
+        .await
+        .unwrap();
+
+    let total = assets.count_search(None, &[]).await.expect("count all");
+    assert!(
+        total >= 3,
+        "count_search with no filter counts all live assets, got {total}"
+    );
+
+    let filtered = assets
+        .count_search(None, &[("type".to_string(), "countprobe".to_string())])
+        .await
+        .expect("count by tag filter");
+    assert_eq!(
+        filtered, 2,
+        "count_search with a tag filter counts only the matching assets"
+    );
+
+    let text = assets
+        .count_search(Some("Count Doc"), &[])
+        .await
+        .expect("count by text query");
+    assert_eq!(
+        text, 2,
+        "count_search with a text query counts only the matching assets (FTS implicit AND)"
+    );
+
+    let combined = assets
+        .count_search(
+            Some("countable"),
+            &[("type".to_string(), "other".to_string())],
+        )
+        .await
+        .expect("count combined filters");
+    assert_eq!(
+        combined, 0,
+        "count_search combines text + tag filters (AND) — no asset matches both"
+    );
+}
+
+pub async fn asset_count_list_matches_filter<A: AssetRepository>(assets: &A) {
+    assets
+        .create(
+            make_asset_request_with_tags(
+                "List Count Doc",
+                "content",
+                vec![("asset_type", "countdoc")],
+            ),
+            "user1",
+        )
+        .await
+        .unwrap();
+    assets
+        .create(
+            make_asset_request_with_tags(
+                "List Count Idea",
+                "content",
+                vec![("asset_type", "countidea")],
+            ),
+            "user1",
+        )
+        .await
+        .unwrap();
+
+    let total = assets.count_list(None).await.expect("count list all");
+    assert!(
+        total >= 2,
+        "count_list with no filter counts all live assets, got {total}"
+    );
+
+    let filtered = assets
+        .count_list(Some("countdoc"))
+        .await
+        .expect("count list filtered");
+    assert_eq!(
+        filtered, 1,
+        "count_list with asset_type counts only the matching assets"
+    );
+}

@@ -616,6 +616,73 @@ impl AssetRepository for SqliteAssetRepository {
         Ok((assets, next_cursor))
     }
 
+    /// Count assets matching the search filter — the true total for
+    /// PaginatedResponse (issue b040d645). Same WHERE shape as `search`
+    /// (FTS subquery + tag EXISTS), cursor-independent, no LIMIT.
+    async fn count_search(
+        &self,
+        query: Option<&str>,
+        tag_filters: &[(String, String)],
+    ) -> Result<u64> {
+        let mut query_str =
+            String::from("SELECT COUNT(DISTINCT a.id) FROM assets a WHERE a.deleted_at IS NULL");
+
+        // Same quoted-phrase FTS5 reduction as `search` — a bare `token:`
+        // bound as MATCH grammar is an expression-injection 500
+        // (build_fts_match_query).
+        let fts_query: Option<String> = query
+            .filter(|q| !q.is_empty())
+            .map(build_fts_match_query)
+            .filter(|q| !q.is_empty());
+        if fts_query.is_some() {
+            query_str.push_str(
+                " AND a.rowid IN (SELECT assets_fts.rowid FROM assets_fts WHERE assets_fts MATCH ?)",
+            );
+        }
+
+        for _ in tag_filters.iter() {
+            query_str.push_str(
+                " AND EXISTS (SELECT 1 FROM tags t WHERE t.asset_id = a.id AND t.category = ? AND t.value = ?)",
+            );
+        }
+
+        let mut q = sqlx::query_scalar::<_, i64>(&query_str);
+
+        if let Some(q_text) = &fts_query {
+            q = q.bind(q_text);
+        }
+
+        for (category, value) in tag_filters {
+            q = q.bind(category).bind(value);
+        }
+
+        let count = q.fetch_one(&self.pool).await?;
+        Ok(count.max(0) as u64)
+    }
+
+    /// Count assets matching the list filter — the true total for
+    /// /api/assets PaginatedResponse (issue b040d645). Same WHERE shape as
+    /// `list` (asset_type EXISTS), cursor-independent, no LIMIT.
+    async fn count_list(&self, asset_type_tag: Option<&str>) -> Result<u64> {
+        let mut query_str =
+            String::from("SELECT COUNT(*) FROM assets a WHERE a.deleted_at IS NULL");
+
+        if asset_type_tag.is_some() {
+            query_str.push_str(
+                " AND EXISTS (SELECT 1 FROM tags t WHERE t.asset_id = a.id AND t.category = 'asset_type' AND t.value = ?)",
+            );
+        }
+
+        let mut q = sqlx::query_scalar::<_, i64>(&query_str);
+
+        if let Some(at) = asset_type_tag {
+            q = q.bind(at);
+        }
+
+        let count = q.fetch_one(&self.pool).await?;
+        Ok(count.max(0) as u64)
+    }
+
     /// Batch content fetch for the compact-path second phase: one query for
     /// the visible page's bodies instead of one per matched row. Absent and
     /// soft-deleted ids are simply missing from the map.

@@ -34,6 +34,10 @@ fn default_order() -> String {
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ListAssetsParams {
+    /// Page size — server-side default: 20 (page 1 = the 20 newest by
+    /// sort order; follow next_cursor for more). Caller-controlled: no
+    /// server-side maximum. Documented in the spec (issue b040d645 (d)).
+    #[param(default = 20)]
     #[serde(default = "default_limit")]
     pub limit: i64,
     #[serde(default)]
@@ -220,6 +224,11 @@ pub async fn list_assets(
     )
     .await?;
 
+    // The true total — cursor-independent, pre-visibility (issue b040d645
+    // (b): PaginatedResponse.total existed but was never populated; boards
+    // rendered page-local counts as if they were the whole set).
+    let total = AssetService::count_list(tx.services(), params.asset_type.as_deref()).await?;
+
     // Cedar enforcement: filter out assets the user cannot view
     let filtered = if let Some(authorizer) = tx.authorizer() {
         let claims = extract_claims(&user);
@@ -231,7 +240,7 @@ pub async fn list_assets(
     Ok(Json(PaginatedResponse {
         data: filtered,
         next_cursor,
-        total: None,
+        total: Some(total),
     }))
 }
 

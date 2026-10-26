@@ -206,6 +206,13 @@ impl AssetService {
             .await
     }
 
+    /// Count assets matching the list filter — the true total for
+    /// /api/assets PaginatedResponse (issue b040d645). Cursor-independent,
+    /// pre-visibility.
+    pub async fn count_list(services: &Services, asset_type_tag: Option<&str>) -> Result<u64> {
+        services.assets().count_list(asset_type_tag).await
+    }
+
     /// Add a tag to an asset
     pub async fn add_tag(
         services: &Services,

@@ -150,9 +150,7 @@ async fn spawn_mock_idp() -> MockIdp {
                         ),
                         // The exchanged-token shape: userinfo answers fine but
                         // carries NO identity material (6c8efe55 class).
-                        UserinfoMode::Empty200 => {
-                            http_response("200 OK", r#"{"sub":"ignored"}"#)
-                        }
+                        UserinfoMode::Empty200 => http_response("200 OK", r#"{"sub":"ignored"}"#),
                         // The enriched-admin control: role=admin in claims.
                         UserinfoMode::OkAdmin => http_response(
                             "200 OK",

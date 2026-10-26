@@ -46,10 +46,14 @@ paths:
       parameters:
       - name: limit
         in: query
+        description: 'Page size. Server-side default: 20 (page 1 = the 20 newest by
+          sort order; follow next_cursor for more). Caller-controlled: no
+          server-side maximum (issue b040d645 (d)).'
         required: false
         schema:
           type: integer
           format: int64
+          default: 20
       - name: cursor
         in: query
         required: false
@@ -858,10 +862,14 @@ paths:
       parameters:
       - name: limit
         in: query
+        description: 'Page size. Server-side default: 20 (page 1 = the 20 newest by
+          updated_at DESC; follow next_cursor for more). Caller-controlled: no
+          server-side maximum (issue b040d645 (d): the default was integrator-invisible).'
         required: false
         schema:
           type: integer
           format: int64
+          default: 20
       - name: cursor
         in: query
         required: false
@@ -880,7 +888,11 @@ paths:
           type: string
       - name: tags
         in: query
-        description: 'Multiple tag filters (repeated param: tag=type:doc&tag=status:draft)'
+        description: 'Multiple tag filters. Accepted wire forms (issues 12d3cb6a +
+          b040d645 (c)): a JSON-array string (tags=%5B%22type%3Adoc%22%2C%22scope%3Ax%22%5D
+          — the lossless form), a comma-separated string (tags=type:doc,scope:x),
+          or a true sequence. Note: serde_urlencoded (the Query backend) has no
+          sequence support — repeated params collapse to the first occurrence.'
         required: false
         schema:
           type: array
@@ -896,8 +908,12 @@ paths:
           type: boolean
       responses:
         '200':
-          description: Search results (compact SearchResult by default, full Asset
-            when full_content=true)
+          description: 'Search results (compact SearchResult by default, full Asset
+            when full_content=true). total = all assets matching the filter in the
+            store (cursor-independent, before per-caller visibility filtering);
+            data = this page (issue b040d645 (b): total was previously never
+            populated — boards rendered page-local counts as if they were the
+            whole set).'
         '503':
           description: 'Auth degraded — token claims could not be verified; body {error:
             auth_degraded, retryable: true}. Retry after re-authentication.'

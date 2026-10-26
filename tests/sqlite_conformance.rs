@@ -635,3 +635,19 @@ async fn prune_age_filter_matches_only_older_than_window() {
     assert_eq!(candidates[0]["id"], serde_json::json!(old.id));
     assert_ne!(candidates[0]["id"], serde_json::json!(fresh.id));
 }
+
+// ============================================================================
+// COUNT / TRUE-TOTAL TESTS (issue b040d645)
+// ============================================================================
+
+#[tokio::test]
+async fn sqlite_asset_count_search_matches_filter() {
+    let (assets, _, _, _) = setup_repos().await;
+    common::asset_count_search_matches_filter(&assets).await;
+}
+
+#[tokio::test]
+async fn sqlite_asset_count_list_matches_filter() {
+    let (assets, _, _, _) = setup_repos().await;
+    common::asset_count_list_matches_filter(&assets).await;
+}
