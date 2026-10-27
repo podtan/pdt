@@ -1,6 +1,6 @@
 [package]
 name = "pdt"
-version = "0.3.18"
+version = "0.3.19"
 edition = "2021"
 description = "Asset store API with relation graphs, tagging, full-text search, multi-instance SQLite tenancy, OIDC auth and Cedar authorization"
 license = "MIT OR Apache-2.0"
@@ -14,7 +14,7 @@ categories = ["database-implementations", "authentication", "web-programming::ht
 # Web framework
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
-tower = "0.4"
+tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "trace", "request-id"] }
 
 # Serialization
@@ -39,7 +39,7 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono"
 cedar-policy = "4"
 
 # PEP library
-pep = { version = "0.5.8", features = ["cedar", "oidc-resource-server", "config", "axum"] }
+pep = { version = "0.5.13", features = ["cedar", "oidc-resource-server", "config", "axum"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }

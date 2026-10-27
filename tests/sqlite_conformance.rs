@@ -651,3 +651,127 @@ async fn sqlite_asset_count_list_matches_filter() {
     let (assets, _, _, _) = setup_repos().await;
     common::asset_count_list_matches_filter(&assets).await;
 }
+
+// ============================================================================
+// CASCADE AUDIT TEST (issue 40df9c5c — F15)
+// ============================================================================
+
+#[tokio::test]
+async fn asset_delete_audit_carries_cascade_relations() {
+    // Issue 40df9c5c: the relation cascade was unaudited — the asset-delete
+    // audit entry carried an EMPTY changes object while the cascade
+    // hard-deleted the relation rows (both backends), so a forensic walk
+    // could not reconstruct which relations an asset delete removed. The
+    // ONE audit entry must carry the removed relation summary (one entry,
+    // not N — less is more).
+    use pdt::models::{AuditAction, CreateRelationRequest, RelationType};
+    use pdt::service::RelationService;
+    use std::collections::HashMap;
+
+    let services = setup_services().await;
+    let user = "test-user";
+    let parent = AssetService::create(
+        &services,
+        common::make_asset_request("parent", "body"),
+        user,
+        &[],
+    )
+    .await
+    .expect("seed parent");
+    let child = AssetService::create(
+        &services,
+        common::make_asset_request("child", "body"),
+        user,
+        &[],
+    )
+    .await
+    .expect("seed child");
+    let other = AssetService::create(
+        &services,
+        common::make_asset_request("other", "body"),
+        user,
+        &[],
+    )
+    .await
+    .expect("seed unrelated");
+
+    let rel1 = RelationService::create(
+        &services,
+        CreateRelationRequest {
+            from_asset_id: parent.id.clone(),
+            to_asset_id: child.id.clone(),
+            relation_type: RelationType::Contains,
+            metadata: HashMap::new(),
+        },
+        user,
+    )
+    .await
+    .expect("seed relation 1");
+    let rel2 = RelationService::create(
+        &services,
+        CreateRelationRequest {
+            from_asset_id: other.id.clone(),
+            to_asset_id: parent.id.clone(),
+            relation_type: RelationType::References,
+            metadata: HashMap::new(),
+        },
+        user,
+    )
+    .await
+    .expect("seed relation 2");
+
+    AssetService::delete(&services, &parent.id, user)
+        .await
+        .expect("delete parent");
+
+    // Walk-verify: the cascade removed BOTH relations (from AND to legs).
+    let remaining = services
+        .relations()
+        .get_asset_relations(&parent.id)
+        .await
+        .expect("post-delete walk");
+    assert!(
+        remaining.is_empty(),
+        "cascade must remove relations touching the deleted asset"
+    );
+
+    // The ONE audit entry carries the removed relation summary.
+    let (audits, _) = services
+        .audit()
+        .list(None, None, None, 100, None)
+        .await
+        .expect("audit list");
+    let delete_entry = audits
+        .iter()
+        .find(|a| a.action == AuditAction::Delete && a.entity_id == parent.id)
+        .expect("asset delete audit entry");
+    assert_eq!(delete_entry.changes["cascade"], serde_json::json!(true));
+    assert_eq!(
+        delete_entry.changes["relations_removed"],
+        serde_json::json!(2)
+    );
+    let relations = delete_entry.changes["relations"]
+        .as_array()
+        .expect("relations array in audit entry");
+    let ids: Vec<&str> = relations
+        .iter()
+        .map(|r| r["id"].as_str().expect("relation id"))
+        .collect();
+    assert!(
+        ids.contains(&rel1.id.as_str()),
+        "audit must name removed relation {}",
+        rel1.id
+    );
+    assert!(
+        ids.contains(&rel2.id.as_str()),
+        "audit must name removed relation {}",
+        rel2.id
+    );
+    // Endpoints + type carried per relation — the rows are hard-deleted, so
+    // the audit entry is the only reconstruction record.
+    for r in relations {
+        assert!(r["from_asset_id"].is_string(), "from endpoint carried");
+        assert!(r["to_asset_id"].is_string(), "to endpoint carried");
+        assert!(r["relation_type"].is_string(), "relation type carried");
+    }
+}

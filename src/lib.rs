@@ -12,6 +12,7 @@ pub mod handlers;
 pub mod models;
 pub mod openapi;
 pub mod repository;
+pub mod router;
 pub mod service;
 pub mod tenant;
 

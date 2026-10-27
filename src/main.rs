@@ -1,32 +1,21 @@
 //! PDT Server Entry Point
 
 use anyhow::Context;
-use axum::{
-    routing::{delete, get, post, put},
-    Router,
-};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tower_http::{
-    cors::{Any, CorsLayer},
-    trace::TraceLayer,
-};
+
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use pdt::auth::middleware::AuthLayer;
 use pdt::config::{Config, DatabaseBackend};
 use pdt::db::Database;
-use pdt::handlers;
-use pdt::openapi::ApiDoc;
 use pdt::repository::{
     MongoAssetRepository, MongoAuditRepository, MongoCollectionRepository, MongoRelationRepository,
 };
+use pdt::router::build_router;
 use pdt::service::Services;
 use pdt::tenant::TenantPoolManager;
 use pep::oidc_resource_server::ResourceServerClient;
-use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
 
 #[cfg(feature = "sqlite-backend")]
 use pdt::repository::{
@@ -148,139 +137,9 @@ async fn main() -> anyhow::Result<()> {
     let auth_layer = AuthLayer::new(config.auth.clone(), auth_client);
     tracing::info!("Auth layer initialized (enabled: {})", config.auth.enabled);
 
-    // Build router
-    // Public routes (no auth)
-    let public_routes = Router::new()
-        .route("/health", get(handlers::health::health_check))
-        // Cedar policy store endpoint — public so other services can fetch policies
-        .route(
-            "/api/cedar/policies",
-            get(handlers::cedar::get_cedar_policies),
-        );
-
-    // Protected routes (auth + Cedar)
-    let protected_routes = Router::new()
-        // Asset routes
-        .route("/api/assets", post(handlers::assets::create_asset))
-        .route("/api/assets", get(handlers::assets::list_assets))
-        .route("/api/assets/{id}", get(handlers::assets::get_asset))
-        .route("/api/assets/{id}", put(handlers::assets::update_asset))
-        .route("/api/assets/{id}", delete(handlers::assets::delete_asset))
-        .route("/api/assets/{id}/tags", post(handlers::assets::add_tag))
-        .route(
-            "/api/assets/{id}/tags/{tag_id}",
-            delete(handlers::assets::remove_tag),
-        )
-        // Auth context route (Cedar visibility/ownership management)
-        .route(
-            "/api/assets/{id}/auth-context",
-            put(handlers::assets::update_auth_context),
-        )
-        // Relation routes
-        .route("/api/relations", post(handlers::relations::create_relation))
-        .route(
-            "/api/relations/{id}",
-            get(handlers::relations::get_relation),
-        )
-        .route(
-            "/api/relations/{id}",
-            delete(handlers::relations::delete_relation),
-        )
-        .route(
-            "/api/assets/{id}/relations",
-            get(handlers::relations::get_asset_relations),
-        )
-        .route(
-            "/api/assets/{id}/graph",
-            get(handlers::relations::traverse_graph),
-        )
-        // Collection routes (no Cedar — use Services directly)
-        .route(
-            "/api/collections",
-            post(handlers::collections::create_collection),
-        )
-        .route(
-            "/api/collections",
-            get(handlers::collections::list_collections),
-        )
-        .route(
-            "/api/collections/{id}",
-            get(handlers::collections::get_collection),
-        )
-        .route(
-            "/api/collections/{id}",
-            put(handlers::collections::update_collection),
-        )
-        .route(
-            "/api/collections/{id}",
-            delete(handlers::collections::delete_collection),
-        )
-        .route(
-            "/api/collections/{id}/assets",
-            post(handlers::collections::add_asset),
-        )
-        .route(
-            "/api/collections/{id}/assets/{asset_id}",
-            delete(handlers::collections::remove_asset),
-        )
-        // Search routes (with Cedar filtering)
-        .route("/api/search", get(handlers::search::search))
-        // Role model (1552c098) — sub-keyed resolution for the PEP authz path
-        .route("/api/roles/{sub}", get(handlers::roles::get_roles))
-        // Directory name-map (4474a038) — uuid → {name, kind, email/role}
-        .route("/api/directory", get(handlers::directory::list_directory))
-        .route(
-            "/api/directory/{uuid}",
-            get(handlers::directory::get_directory_entry),
-        )
-        .route(
-            "/api/directory/{uuid}",
-            put(handlers::directory::upsert_directory_entry),
-        )
-        // Maintenance (admin-gated, idempotent backfills)
-        .route(
-            "/api/maintenance/backfill",
-            post(handlers::maintenance::backfill),
-        )
-        // Retention prune (admin-gated; dry-run default, execution wire-gated
-        // on PDT_PRUNE_ENABLED — CPO ruling 8d591e85)
-        .route("/api/maintenance/prune", post(handlers::maintenance::prune))
-        // Audit routes
-        .route("/api/audit", get(handlers::audit::list_audit_entries))
-        .route(
-            "/api/assets/{id}/history",
-            get(handlers::audit::get_asset_history),
-        )
-        // Tenant management endpoints
-        .route(
-            "/api/instances/{instance_id}/provision",
-            post(handlers::instances::provision_instance),
-        )
-        .route(
-            "/api/instances/{instance_id}",
-            axum::routing::delete(handlers::instances::delete_instance),
-        )
-        .route("/api/instances", get(handlers::instances::list_instances))
-        .route(
-            "/api/instances/tree",
-            get(handlers::instances::list_instance_tree),
-        )
-        // Middleware (auth + tracing + CORS)
-        .layer(TraceLayer::new_for_http())
-        .layer(auth_layer)
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        );
-
-    let app = Router::new()
-        .merge(public_routes)
-        .merge(protected_routes)
-        // OpenAPI spec + Swagger UI (public, no auth)
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
-        .with_state((tenant_manager, authorizer.map(Arc::new)));
+    // Build router — assembly lives in the lib (pdt::router::build_router)
+    // so the gate tests exercise the exact production shape (issue e0db0993).
+    let app = build_router(tenant_manager, auth_layer, authorizer);
 
     // Start server
     let addr = format!("{}:{}", config.server.host, config.server.port)

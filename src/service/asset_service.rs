@@ -168,9 +168,19 @@ impl AssetService {
     }
 
     /// Delete an asset (soft delete)
+    ///
+    /// The relation cascade is a HARD delete on both backends — the removed
+    /// rows are unrecoverable, so this ONE audit entry carries the removed
+    /// relation summary (id + endpoints + type) as the only forensic record
+    /// of what the cascade removed (issue 40df9c5c: cascade removals were
+    /// unaudited — "relation-rows 2→2, zero delete rows" in a forensic walk).
     pub async fn delete(services: &Services, id: &str, user_id: &str) -> Result<()> {
         // Verify asset exists
         services.assets().get_by_id(id).await?;
+
+        // Snapshot the asset's relations BEFORE the cascade — they are
+        // hard-deleted below and the audit entry is the only record left.
+        let cascaded_relations = services.relations().get_asset_relations(id).await?;
 
         // Delete asset
         services.assets().soft_delete(id).await?;
@@ -181,10 +191,32 @@ impl AssetService {
         // Remove from collections
         services.collections().remove_asset_from_all(id).await?;
 
-        // Create audit entry
+        // Create audit entry — ONE entry per cascade (less is more, not N),
+        // carrying the removed relation summary so a forensic walk can
+        // reconstruct the cascade (issue 40df9c5c).
         services
             .audit()
-            .create("asset", id, AuditAction::Delete, json!({}), user_id)
+            .create(
+                "asset",
+                id,
+                AuditAction::Delete,
+                json!({
+                    "cascade": true,
+                    "relations_removed": cascaded_relations.len(),
+                    "relations": cascaded_relations
+                        .iter()
+                        .map(|r| {
+                            json!({
+                                "id": r.id,
+                                "from_asset_id": r.from_asset_id,
+                                "to_asset_id": r.to_asset_id,
+                                "relation_type": r.relation_type.to_string(),
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                }),
+                user_id,
+            )
             .await?;
 
         Ok(())
@@ -393,7 +425,8 @@ impl AssetService {
     ///    (deleted_at stamp — recoverable at the store); never a hard delete.
     /// 2. EXECUTION SOFT-DELETE-ONLY: every removal rides the full
     ///    AssetService::delete path (soft_delete + relation cascade +
-    ///    collections cleanup + ONE audit entry) — no bare row kills.
+    ///    collections cleanup + ONE audit entry carrying the removed-relation
+    ///    summary, 40df9c5c) — no bare row kills.
     /// 3. FIRST EXECUTION gated on the CPO's sight of the dry-run numbers:
     ///    the WIRE gate is the handler's PDT_PRUNE_ENABLED check — this
     ///    function refuses dry_run=false unless the caller already cleared
