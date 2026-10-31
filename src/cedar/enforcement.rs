@@ -117,12 +117,40 @@ where
             .get_services(instance_id.as_deref())
             .await
             .map_err(|e| {
-                tracing::error!("Failed to resolve tenant services: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to resolve tenant: {}", e),
-                )
-                    .into_response()
+                // Issue 44b13a5f: tenant resolution failures are request-class
+                // errors, never a 500 and never a silent database creation:
+                // - NotProvisioned (unknown-but-valid UUID) → 404 naming the id
+                // - InvalidId (malformed header) → 400
+                // - anything else (pool/migration/I/O) → 500
+                match e.downcast_ref::<crate::tenant::TenantError>() {
+                    Some(crate::tenant::TenantError::NotProvisioned(id)) => {
+                        tracing::warn!(
+                            "Tenant resolution: instance {} not provisioned (request path never creates — 44b13a5f)",
+                            id
+                        );
+                        crate::error::ApiError::NotFound(format!(
+                            "Instance {} is not provisioned (no database found on disk)",
+                            id
+                        ))
+                        .into_response()
+                    }
+                    Some(crate::tenant::TenantError::InvalidId(id)) => {
+                        tracing::warn!("Tenant resolution: invalid instance id {}", id);
+                        crate::error::ApiError::BadRequest(format!(
+                            "invalid instance id (not a UUID): {}",
+                            id
+                        ))
+                        .into_response()
+                    }
+                    _ => {
+                        tracing::error!("Failed to resolve tenant services: {}", e);
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Failed to resolve tenant: {}", e),
+                        )
+                            .into_response()
+                    }
+                }
             })?;
 
         Ok(TenantState {

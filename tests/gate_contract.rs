@@ -148,3 +148,89 @@ async fn dev_mode_router_keeps_every_surface_reachable() {
         "dev-mode openapi spec reachable"
     );
 }
+
+// ---- Issue 44b13a5f: the request path never creates a workspace DB ----
+
+#[tokio::test]
+async fn unknown_instance_id_404s_naming_the_id_zero_disk_writes() {
+    // Acceptance 1 (CPO ruling 2026-10-29): unknown-but-valid-UUID
+    // X-Instance-Id on a REAL request → 404 naming the instance id, zero
+    // disk writes. Dev mode so the request reaches the tenant extractor.
+    let dir = std::env::temp_dir().join(format!("pdt_gate_44b13a5f_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let services = sqlite_services().await;
+    let tenant_manager = TenantPoolManager::new(services, dir.clone());
+    let auth_layer = AuthLayer::new(auth_config(false, true), ResourceServerClient::new());
+    let app = build_router(tenant_manager, auth_layer, None);
+
+    let unknown = uuid::Uuid::new_v4().to_string();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/assets")
+                .header("X-Instance-Id", &unknown)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "unknown-but-valid-UUID instance id must 404, never 200-empty"
+    );
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .expect("body");
+    let body = String::from_utf8(body.to_vec()).expect("utf8 body");
+    assert!(
+        body.contains(&unknown),
+        "404 body must name the instance id, got: {}",
+        body
+    );
+
+    // Zero disk writes: the instances dir must still be empty.
+    let entries: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+    assert!(
+        entries.is_empty(),
+        "request path must not materialize any workspace directory or database"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn malformed_instance_id_400s_not_500() {
+    // The same extractor maps a malformed (non-UUID) X-Instance-Id to 400
+    // (request-class), not 500 (server-fault) — issue 44b13a5f.
+    let dir = std::env::temp_dir().join(format!("pdt_gate_44b13a5f_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let services = sqlite_services().await;
+    let tenant_manager = TenantPoolManager::new(services, dir.clone());
+    let auth_layer = AuthLayer::new(auth_config(false, true), ResourceServerClient::new());
+    let app = build_router(tenant_manager, auth_layer, None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/assets")
+                .header("X-Instance-Id", "../../etc/passwd")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "malformed instance id must 400 (request-class), not 500"
+    );
+    let entries: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+    assert!(entries.is_empty(), "no disk writes on a rejected id");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

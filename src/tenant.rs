@@ -17,11 +17,14 @@
 //! absent, the global database is used.
 //!
 //! Instance pools are created lazily on first request and cached. Lazy
-//! creation is allowed **only** for workspaces (which are always provisioned
-//! explicitly by the control plane first); a child instance must already
-//! exist on disk — the control plane provisions it explicitly — otherwise
-//! the request is rejected rather than silently materializing a DB for an
-//! arbitrary nested path.
+//! **pool creation** (opening an already-provisioned database) is allowed
+//! for both workspaces and child instances; lazy **database creation** is
+//! allowed for NEITHER — a workspace must already be provisioned on disk by
+//! the control plane (CPO ruling 2026-10-29, issue 44b13a5f: the request
+//! path never creates a database, it fails loud naming the instance id),
+//! and a child instance must already exist on disk — otherwise the request
+//! is rejected rather than silently materializing a DB for an arbitrary
+//! path.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -42,15 +45,37 @@ use crate::service::Services;
 /// Default max connections per instance pool.
 const INSTANCE_POOL_MAX_CONN: u32 = 3;
 
+/// Tenant resolution failure — typed so the request path can map each
+/// variant to the right wire class (issue 44b13a5f): an unknown-but-valid
+/// instance id is a 404-class request error naming the id (never a 500 and
+/// never a silent database creation); a malformed id is a 400; only
+/// infrastructure failures are 500-class.
+#[derive(Debug, thiserror::Error)]
+pub enum TenantError {
+    /// Unknown-but-valid-UUID instance id on the request path: no database
+    /// exists on disk for it. The request path NEVER creates one — creation
+    /// flows only through the explicit provisioning path
+    /// ([`TenantPoolManager::provision_instance`]) (CPO ruling 2026-10-29,
+    /// issue 44b13a5f).
+    #[error("Instance {0} is not provisioned (no database found on disk)")]
+    NotProvisioned(String),
+
+    /// Malformed instance id (not a bare UUID) — path-safety rejection.
+    #[error("invalid instance id (not a UUID): {0}")]
+    InvalidId(String),
+}
+
 /// Validate that an instance ID is a bare UUID (RFC 4122, hyphenated form).
 ///
 /// Instance IDs are used to build filesystem paths, so they must never
 /// contain separators, traversal sequences, or any other path component.
-/// Accepting only canonical UUIDs makes path joining safe.
+/// Accepting only canonical UUIDs makes path joining safe. The failure is
+/// carried as a typed [`TenantError::InvalidId`] so the request path can
+/// map it to 400 instead of 500 (issue 44b13a5f).
 fn validate_uuid(id: &str) -> Result<()> {
     uuid::Uuid::parse_str(id)
         .map(|_| ())
-        .map_err(|e| anyhow::anyhow!("invalid instance id (not a UUID): {} ({})", id, e))
+        .map_err(|_| anyhow::Error::new(TenantError::InvalidId(id.to_string())))
 }
 
 /// Extracts the `X-Instance-Id` header from the request.
@@ -117,11 +142,12 @@ impl TenantPoolManager {
 
     /// Get services for a given tenant. Falls back to global when instance_id is None.
     ///
-    /// - Top-level (workspace) instances: lazily opened if provisioned on disk,
-    ///   or created if this is the initial provisioning call path.
-    /// - Child instances: must already exist on disk (provisioned explicitly
-    ///   by the control plane); otherwise an error is returned instead of
-    ///   silently creating a nested DB.
+    /// - Provisioned instances (workspace top-level or nested child): the
+    ///   database is opened (pool created lazily) and cached.
+    /// - Unknown-but-valid-UUID instances: **error** — the request path
+    ///   never creates a database (CPO ruling 2026-10-29, issue 44b13a5f);
+    ///   creation flows only through [`TenantPoolManager::provision_instance`].
+    /// - Malformed (non-UUID) ids: error (path-safety).
     pub async fn get_services(&self, instance_id: Option<&str>) -> Result<Services> {
         let Some(instance_id) = instance_id else {
             return Ok(self.global_services.clone());
@@ -142,7 +168,13 @@ impl TenantPoolManager {
 
         // Slow path: create new pool + services
         info!("Creating SQLite pool for instance: {}", instance_id);
-        let services = self.open_instance_services(instance_id, &db_path).await?;
+        // create_if_missing = false: locate_db guarantees the database file
+        // exists — the request path never creates one (issue 44b13a5f). If
+        // the file vanished between the existence check and this connect,
+        // we fail loud instead of silently recreating it.
+        let services = self
+            .open_instance_services(instance_id, &db_path, false)
+            .await?;
 
         // Cache it
         {
@@ -156,10 +188,12 @@ impl TenantPoolManager {
     /// Resolve the `pdt.db` path for an instance ID.
     ///
     /// Checks top-level (`{instances_dir}/{id}/pdt.db`) then nested
-    /// (`{instances_dir}/{parent}/{id}/pdt.db`, any parent). A top-level
-    /// instance that doesn't exist yet is opened at the top-level path
-    /// (lazy provisioning of workspaces); a nested path that doesn't exist
-    /// is an error — child instances must be provisioned explicitly.
+    /// (`{instances_dir}/{parent}/{id}/pdt.db`, any parent). A path that
+    /// doesn't exist anywhere is an error naming the instance id — the
+    /// request path never creates a database (CPO ruling 2026-10-29, issue
+    /// 44b13a5f); creation flows only through
+    /// [`TenantPoolManager::provision_instance`]. One rule for top-level
+    /// and child, no special case.
     async fn locate_db(&self, instance_id: &str) -> Result<PathBuf> {
         let top = self.instances_dir.join(instance_id).join("pdt.db");
         if top.exists() {
@@ -179,16 +213,24 @@ impl TenantPoolManager {
             }
         }
 
-        // Not found anywhere: treat as a new top-level workspace.
-        // `create_if_missing(true)` in the connect options will create it.
-        Ok(top)
+        // Not found anywhere: fail loud naming the instance id. The request
+        // path never creates a database (issue 44b13a5f) — the explicit
+        // provisioning path (`provision_instance`) is the only creator.
+        Err(anyhow::Error::new(TenantError::NotProvisioned(
+            instance_id.to_string(),
+        )))
     }
 
     /// Create a new SQLite pool for an instance and build Services from it.
+    ///
+    /// `create_if_missing` is caller-declared: the request path passes
+    /// `false` (the database must already exist on disk — issue 44b13a5f);
+    /// only the explicit provisioning path passes `true`.
     async fn open_instance_services(
         &self,
         instance_id: &str,
         db_path: &PathBuf,
+        create_if_missing: bool,
     ) -> Result<Services> {
         // Ensure directory exists
         if let Some(parent) = db_path.parent() {
@@ -204,7 +246,7 @@ impl TenantPoolManager {
             .connect_with(
                 SqliteConnectOptions::new()
                     .filename(db_path)
-                    .create_if_missing(true)
+                    .create_if_missing(create_if_missing)
                     .foreign_keys(true)
                     .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal),
             )
@@ -289,7 +331,8 @@ impl TenantPoolManager {
             return Ok(());
         }
 
-        self.open_instance_services(instance_id, &db_path).await?;
+        self.open_instance_services(instance_id, &db_path, true)
+            .await?;
         info!(
             "Instance {} provisioned under parent {:?} at {:?}",
             instance_id, parent_id, db_path
@@ -594,6 +637,105 @@ mod tests {
             let mgr = manager_with_dir().await;
             assert!(mgr.get_services(Some("../etc")).await.is_err());
             assert!(mgr.get_services(Some("nope")).await.is_err());
+        }
+
+        // ---- Issue 44b13a5f: the request path never creates a database ----
+
+        #[tokio::test]
+        async fn get_services_unknown_uuid_fails_loud_zero_disk_writes() {
+            // Acceptance 1: unknown-but-valid-UUID X-Instance-Id → error
+            // naming the instance id, ZERO disk writes.
+            let mgr = manager_with_dir().await;
+            let unknown = uuid::Uuid::new_v4().to_string();
+
+            let err = match mgr.get_services(Some(&unknown)).await {
+                Err(e) => e,
+                Ok(_) => panic!("unknown-but-valid-UUID instance id must fail loud"),
+            };
+
+            // Typed error carrying the instance id (the extractor maps this
+            // to 404 naming the id — never a 500, never a creation).
+            let typed = err
+                .downcast_ref::<TenantError>()
+                .expect("tenant resolution failure must be the typed TenantError");
+            match typed {
+                TenantError::NotProvisioned(id) => assert_eq!(id, &unknown),
+                other => panic!("expected NotProvisioned, got {:?}", other),
+            }
+
+            // Zero disk writes: the instances dir must still be empty.
+            let entries: Vec<_> = std::fs::read_dir(&mgr.instances_dir).unwrap().collect();
+            assert!(
+                entries.is_empty(),
+                "request path must not materialize any workspace directory or database"
+            );
+        }
+
+        #[tokio::test]
+        async fn get_services_unknown_nested_uuid_also_fails_loud() {
+            // One rule for top-level and child, no special case: a valid
+            // UUID with no database anywhere (top-level or nested) fails
+            // loud even when OTHER workspaces are provisioned.
+            let mgr = manager_with_dir().await;
+            let ws = uuid::Uuid::new_v4().to_string();
+            mgr.provision_instance(&ws, None).await.unwrap();
+            let unknown_child = uuid::Uuid::new_v4().to_string();
+
+            let err = match mgr.get_services(Some(&unknown_child)).await {
+                Err(e) => e,
+                Ok(_) => panic!("unknown nested instance id must fail loud"),
+            };
+            let typed = err
+                .downcast_ref::<TenantError>()
+                .expect("must be the typed TenantError");
+            assert!(
+                matches!(typed, TenantError::NotProvisioned(_)),
+                "expected NotProvisioned, got {:?}",
+                typed
+            );
+            // The provisioned workspace is untouched.
+            assert!(mgr.instances_dir.join(&ws).join("pdt.db").exists());
+        }
+
+        #[tokio::test]
+        async fn provisioning_path_still_works_after_fail_loud() {
+            // Acceptance 2 + 4: the explicit provisioning path still
+            // provisions + serves, and a failed request-path attempt writes
+            // nothing and does not poison a later provisioning.
+            let mgr = manager_with_dir().await;
+
+            // Failed attempt on an unknown id writes nothing.
+            let late = uuid::Uuid::new_v4().to_string();
+            assert!(mgr.get_services(Some(&late)).await.is_err());
+            let entries: Vec<_> = std::fs::read_dir(&mgr.instances_dir).unwrap().collect();
+            assert!(entries.is_empty());
+
+            // The explicit provisioning path provisions + seeds.
+            mgr.provision_instance(&late, None).await.unwrap();
+            assert!(mgr.instances_dir.join(&late).join("pdt.db").exists());
+
+            // The request path now resolves the provisioned workspace.
+            let services = mgr.get_services(Some(&late)).await.unwrap();
+            let _created = services
+                .assets()
+                .create(
+                    crate::models::CreateAssetRequest {
+                        title: "post-fix-marker".into(),
+                        content: None,
+                        tags: vec![],
+                        metadata: Default::default(),
+                        auth_context: None,
+                    },
+                    "test-user",
+                )
+                .await
+                .unwrap();
+
+            // Existing workspaces unaffected: the earlier workspace still
+            // resolves on the request path.
+            let ws = uuid::Uuid::new_v4().to_string();
+            mgr.provision_instance(&ws, None).await.unwrap();
+            mgr.get_services(Some(&ws)).await.unwrap();
         }
 
         #[tokio::test]
