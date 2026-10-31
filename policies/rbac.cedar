@@ -150,3 +150,68 @@ permit(
     action == Action::"Relate",
     resource
 );
+
+// ─── Workspace membership + agent management (WS-B 99035dee) ───
+// Membership data (has_access relations) and agent links (has_agent
+// relations) are the role ladder — the generic Relate permit above must
+// NEVER cover them (any authenticated user could self-escalate via a
+// direct has_access write). These writes enforce the dedicated actions
+// with the caller's RESOLVED seat role in the context.
+//
+// Platform admins retain everything (mirrors the admin permit above).
+permit(
+    principal,
+    action in [Action::"ManageMembers", Action::"ManageWorkspaceAgents"],
+    resource
+) when {
+    principal has role && principal.role == "admin"
+};
+
+// Owner retains everything on their own workspace (the caller_role is
+// resolved FOR the target workspace — a role on workspace A grants
+// nothing on workspace B; the cross-workspace negative is the default
+// deny with no existence leak: a uniform 403 either way).
+permit(
+    principal,
+    action == Action::"ManageMembers",
+    resource
+) when {
+    context has caller_role && context.caller_role == "owner"
+};
+
+permit(
+    principal,
+    action == Action::"ManageWorkspaceAgents",
+    resource
+) when {
+    context has caller_role && context.caller_role == "owner"
+};
+
+// ws_admin manages PLAIN members only — never the role ladder
+// (Farzan ruling d130b9b5: WsAdmin manages members, never the role
+// ladder; self-escalation denied): may add a member seat onto a
+// non-member and remove a plain member; may never touch ws_admin/owner
+// seats, grant a ws_admin seat, or change an existing seat's role.
+permit(
+    principal,
+    action == Action::"ManageMembers",
+    resource
+) when {
+    context has caller_role && context.caller_role == "ws_admin"
+    && context has target_seat_role
+    && (context.target_seat_role == "none" || context.target_seat_role == "member")
+    && (
+        !(context has requested_role)
+        || (context has requested_role && context.requested_role == "member")
+    )
+};
+
+// ws_admin manages the workspace's agents (use-plane administration —
+// d130b9b5), within their own workspace only.
+permit(
+    principal,
+    action == Action::"ManageWorkspaceAgents",
+    resource
+) when {
+    context has caller_role && context.caller_role == "ws_admin"
+};

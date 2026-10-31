@@ -29,3 +29,21 @@ action View, Create, Edit, Delete, Tag, Relate appliesTo {
     principal: [User],
     resource: [Asset],
 };
+
+// Workspace-management actions (WS-B 99035dee): membership + agent writes
+// are NOT asset CRUD — they carry the caller's resolved seat role in the
+// CONTEXT (per-request, per-workspace data; the principal stays
+// workspace-agnostic per the tenancy model). caller_role = the caller's
+// membership role on the target workspace (owner | ws_admin | member |
+// none); target_seat_role = the target principal's current seat on that
+// workspace ("none" when absent); requested_role = the seat being written
+// (has_access creates only).
+action ManageMembers, ManageWorkspaceAgents appliesTo {
+    principal: [User],
+    resource: [Asset],
+    context: {
+        caller_role: String,
+        target_seat_role?: String,
+        requested_role?: String,
+    },
+};

@@ -11,7 +11,7 @@ use utoipa::IntoParams;
 use crate::auth::AuthenticatedUser;
 use crate::cedar::enforcement::TenantState;
 use crate::error::Result;
-use crate::models::{CreateRelationRequest, Relation};
+use crate::models::{CreateRelationRequest, Relation, RelationType};
 use crate::service::{relation_service::GraphNode, RelationService};
 
 /// Query parameters for graph traversal
@@ -51,18 +51,58 @@ pub async fn create_relation(
 ) -> Result<Json<Relation>> {
     let user_id = &user.user_id;
 
-    // Cedar enforcement: check permission on both assets
+    // Cedar enforcement. Membership data (has_access) and workspace agent
+    // links (has_agent) are the ROLE LADDER — they enforce the dedicated
+    // WS-B actions (99035dee) with the caller's resolved seat role in the
+    // context, NEVER the generic Relate permit (which would let any
+    // authenticated user self-escalate via a direct has_access write).
     if let Some(ref authorizer) = tx.authorizer() {
         let claims = extract_claims(&user);
-        crate::cedar::enforcement::check_relation_permission(
-            tx.services(),
-            authorizer,
-            &claims,
-            "Relate",
-            &request.from_asset_id,
-            &request.to_asset_id,
-        )
-        .await?;
+        match request.relation_type {
+            RelationType::HasAccess => {
+                // has_access: User → Workspace — the workspace is the
+                // target; the "target user" is the relation source.
+                let requested_role = request
+                    .metadata
+                    .get("role")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                crate::cedar::enforcement::check_membership_permission(
+                    tx.services(),
+                    authorizer,
+                    &claims,
+                    "ManageMembers",
+                    &request.to_asset_id,
+                    &request.from_asset_id,
+                    requested_role.as_deref(),
+                )
+                .await?;
+            }
+            RelationType::HasAgent => {
+                // has_agent: Workspace → Agent — the workspace is the source.
+                crate::cedar::enforcement::check_membership_permission(
+                    tx.services(),
+                    authorizer,
+                    &claims,
+                    "ManageWorkspaceAgents",
+                    &request.from_asset_id,
+                    &request.from_asset_id,
+                    None,
+                )
+                .await?;
+            }
+            _ => {
+                crate::cedar::enforcement::check_relation_permission(
+                    tx.services(),
+                    authorizer,
+                    &claims,
+                    "Relate",
+                    &request.from_asset_id,
+                    &request.to_asset_id,
+                )
+                .await?;
+            }
+        }
     }
 
     let relation = RelationService::create(tx.services(), request, user_id).await?;
@@ -107,18 +147,50 @@ pub async fn delete_relation(
 ) -> Result<Json<serde_json::Value>> {
     let user_id = &user.user_id;
 
-    // Cedar enforcement: check permission on the relation's source asset
+    // Cedar enforcement. Membership (has_access) and agent-link (has_agent)
+    // deletes are role-ladder writes — the dedicated WS-B actions with the
+    // caller's resolved seat role (99035dee), never the generic Relate
+    // permit. A delete carries no requested_role: the ws_admin arm permits
+    // removing PLAIN members only (target_seat_role == "member").
     if let Some(ref authorizer) = tx.authorizer() {
         let relation = RelationService::get(tx.services(), &id).await?;
         let claims = extract_claims(&user);
-        crate::cedar::enforcement::check_asset_permission_by_id(
-            tx.services(),
-            authorizer,
-            &claims,
-            "Relate",
-            &relation.from_asset_id,
-        )
-        .await?;
+        match relation.relation_type {
+            RelationType::HasAccess => {
+                crate::cedar::enforcement::check_membership_permission(
+                    tx.services(),
+                    authorizer,
+                    &claims,
+                    "ManageMembers",
+                    &relation.to_asset_id,
+                    &relation.from_asset_id,
+                    None,
+                )
+                .await?;
+            }
+            RelationType::HasAgent => {
+                crate::cedar::enforcement::check_membership_permission(
+                    tx.services(),
+                    authorizer,
+                    &claims,
+                    "ManageWorkspaceAgents",
+                    &relation.from_asset_id,
+                    &relation.from_asset_id,
+                    None,
+                )
+                .await?;
+            }
+            _ => {
+                crate::cedar::enforcement::check_asset_permission_by_id(
+                    tx.services(),
+                    authorizer,
+                    &claims,
+                    "Relate",
+                    &relation.from_asset_id,
+                )
+                .await?;
+            }
+        }
     }
 
     RelationService::delete(tx.services(), &id, user_id).await?;

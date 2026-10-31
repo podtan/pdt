@@ -14,13 +14,16 @@ use std::sync::Arc;
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
-use cedar_policy::{Context, Entities, Request};
+use cedar_policy::{Context, Entities, Request, RestrictedExpression};
 use pep::cedar::CedarAuthorizer;
 use pep::oidc::types::JwtClaims;
 
 use crate::auth::AuthenticatedUser;
 use crate::error::ApiError;
+use crate::models::roles::normalize_membership_role;
 use crate::models::Asset;
+use crate::models::RelationType;
+use crate::service::roles_service::RolesService;
 use crate::service::Services;
 use crate::tenant::TenantPoolManager;
 
@@ -287,6 +290,156 @@ pub async fn check_relation_permission(
 ) -> Result<(), ApiError> {
     check_asset_permission_by_id(services, authorizer, claims, "View", from_asset_id).await?;
     check_asset_permission_by_id(services, authorizer, claims, action, to_asset_id).await?;
+    Ok(())
+}
+
+/// Resolve a principal's membership seat on a workspace, keyed by the
+/// principal's PDT asset id (the TARGET side of a membership write carries
+/// an asset id, not a sub — the caller side resolves via the sub-keyed
+/// roles service). has_instance → owner; has_access metadata role →
+/// normalized (legacy "admin" → ws_admin); no row → "none".
+async fn resolve_seat_role_by_asset(
+    services: &Services,
+    user_asset_id: &str,
+    workspace_id: &str,
+) -> String {
+    let relations = match services
+        .relations()
+        .get_asset_relations(user_asset_id)
+        .await
+    {
+        Ok(r) => r,
+        // Resolve failure → "none" — the policies deny (fail-closed).
+        Err(_) => return "none".to_string(),
+    };
+    if relations.iter().any(|r| {
+        r.from_asset_id == user_asset_id
+            && r.relation_type == RelationType::HasInstance
+            && r.to_asset_id == workspace_id
+    }) {
+        return "owner".to_string();
+    }
+    if let Some(rel) = relations.iter().find(|r| {
+        r.from_asset_id == user_asset_id
+            && r.relation_type == RelationType::HasAccess
+            && r.to_asset_id == workspace_id
+    }) {
+        return normalize_membership_role(rel.metadata.get("role").and_then(|v| v.as_str()))
+            .to_string();
+    }
+    "none".to_string()
+}
+
+/// Membership/agent-link write enforcement (WS-B 99035dee).
+///
+/// has_access (membership) and has_agent (workspace agents) relation writes
+/// enforce the dedicated `ManageMembers` / `ManageWorkspaceAgents` actions —
+/// the generic `Relate` permit must never cover the role ladder (any
+/// authenticated user could otherwise self-escalate via a direct has_access
+/// write).
+///
+/// The caller's seat role is PDT DATA (has_access relation metadata), never
+/// a principal attribute — a JWT is workspace-agnostic; per-workspace roles
+/// live in relation data. It reaches Cedar via the CONTEXT (Cedar's native
+/// per-request channel), resolved BEFORE the sync evaluate (pre-resolved
+/// pass-in — evaluate_permission is sync).
+///
+/// The caller's role resolves FOR the target workspace (sub-keyed, the WS-A
+/// roles service): a seat on workspace A grants nothing on workspace B —
+/// the cross-workspace negative is the default deny, a uniform 403 with no
+/// existence leak. Resolve failures deny (fail-closed).
+pub async fn check_membership_permission(
+    services: &Services,
+    authorizer: &CedarAuthorizer,
+    claims: &JwtClaims,
+    action: &str,
+    workspace_id: &str,
+    target_user_asset_id: &str,
+    requested_role: Option<&str>,
+) -> Result<(), ApiError> {
+    // Caller's seat on the TARGET workspace (sub-keyed, WS-A spec of record).
+    let caller_role = match RolesService::resolve(services, &claims.sub).await {
+        Ok(answer) => answer
+            .membership
+            .iter()
+            .find(|m| m.workspace_id == workspace_id)
+            .map(|m| m.role.clone())
+            .unwrap_or_else(|| "none".to_string()),
+        // Resolve failure → "none" — the policies deny (fail-closed);
+        // the warn keeps the 5xx-class cause on the record.
+        Err(e) => {
+            tracing::warn!(
+                "Membership role resolve failed for sub {} (denying fail-closed): {}",
+                claims.sub,
+                e
+            );
+            "none".to_string()
+        }
+    };
+    // Target's CURRENT seat on the workspace (asset-id-keyed).
+    let target_seat_role =
+        resolve_seat_role_by_asset(services, target_user_asset_id, workspace_id).await;
+
+    let principal = pep::cedar::build_principal_uid(claims).map_err(|e| {
+        tracing::warn!("Cedar principal build failed: {}", e);
+        ApiError::Forbidden(format!("Authorization error: {}", e))
+    })?;
+    let action_uid = pep::cedar::build_action_uid(action).map_err(|e| {
+        tracing::warn!("Cedar action build failed: {}", e);
+        ApiError::Forbidden(format!("Authorization error: {}", e))
+    })?;
+    let resource = pep::cedar::entity::ResourceInfo::new("Asset", workspace_id)
+        .to_cedar_uid()
+        .map_err(|e| {
+            tracing::warn!(
+                "Cedar resource build failed for workspace {}: {}",
+                workspace_id,
+                e
+            );
+            ApiError::Forbidden(format!("Authorization error: {}", e))
+        })?;
+
+    // Context carries the resolved seats (per-request, per-workspace data).
+    let mut pairs: Vec<(String, RestrictedExpression)> = vec![
+        (
+            "caller_role".to_string(),
+            RestrictedExpression::new_string(caller_role.clone()),
+        ),
+        (
+            "target_seat_role".to_string(),
+            RestrictedExpression::new_string(target_seat_role.clone()),
+        ),
+    ];
+    if let Some(req_role) = requested_role {
+        pairs.push((
+            "requested_role".to_string(),
+            RestrictedExpression::new_string(req_role.to_string()),
+        ));
+    }
+    let context = Context::from_pairs(pairs).map_err(|e| {
+        tracing::warn!("Cedar context build failed: {}", e);
+        ApiError::Forbidden(format!("Authorization error: {}", e))
+    })?;
+
+    let request = Request::new(principal, action_uid, resource, context, None).map_err(|e| {
+        tracing::warn!("Cedar request build failed: {}", e);
+        ApiError::Forbidden(format!("Authorization error: {}", e))
+    })?;
+
+    let response = authorizer.is_allowed(&request);
+    if !response.allowed() {
+        tracing::warn!(
+            "Cedar denied {} on workspace {} for user {} (caller_role={}, target_seat_role={})",
+            action,
+            workspace_id,
+            claims.sub,
+            caller_role,
+            target_seat_role
+        );
+        return Err(ApiError::Forbidden(
+            "Access denied: workspace membership management requires the owner seat".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -921,5 +1074,391 @@ mod batched_filter_tests {
             visible_ids(&batched),
             "one-band batch must match the per-row verdict for every row"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — WS-B membership enforcement (99035dee, workstream 10575df1)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod membership_enforcement_tests {
+    //! WS-B 99035dee AC: cedar CLI gate green (the embedded policy loads
+    //! with validate_on_load — the gate IS this module's test_authorizer);
+    //! cross-workspace negative (uniform 403, no existence leak);
+    //! self-escalation denied; owner retains everything; ws_admin manages
+    //! PLAIN members only (d130b9b5: never the role ladder).
+
+    use super::*;
+    use crate::models::{CreateRelationRequest, RelationType};
+    use crate::repository::{
+        SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
+        SqliteRelationRepository,
+    };
+    use crate::service::Services;
+    use pep::cedar::CedarConfig;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    async fn test_services() -> Services {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("in-memory sqlite");
+        let migration_sql = include_str!("../../migrations/sqlite/001_initial.sql");
+        sqlx::raw_sql(migration_sql)
+            .execute(&pool)
+            .await
+            .expect("migrations");
+        Services::from_repositories(
+            SqliteAssetRepository::new(pool.clone()),
+            SqliteRelationRepository::new(pool.clone()),
+            SqliteCollectionRepository::new(pool.clone()),
+            SqliteAuditRepository::new(pool),
+        )
+    }
+
+    fn test_authorizer() -> CedarAuthorizer {
+        let config = CedarConfig {
+            policy_path: PathBuf::from("/nonexistent/policies.cedar"),
+            schema_path: None,
+            entities_path: None,
+            default_decision: Default::default(),
+            validate_on_load: true,
+            policy_store_url: None,
+            policy_store_token: None,
+            embedded_policy: Some(include_str!("../../policies/rbac.cedar")),
+            embedded_schema: Some(include_str!("../../policies/schema.cedarschema")),
+        };
+        CedarAuthorizer::new(config).expect("cedar CLI gate: embedded policy+schema validate")
+    }
+
+    fn claims_for(sub: &str) -> JwtClaims {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "role".to_string(),
+            serde_json::Value::String("user".to_string()),
+        );
+        JwtClaims {
+            sub: sub.to_string(),
+            iss: "test-issuer".to_string(),
+            aud: None,
+            exp: 9999999999,
+            iat: None,
+            email: Some(format!("{}@example.com", sub)),
+            name: None,
+            preferred_username: None,
+            extra,
+        }
+    }
+
+    async fn seed_asset(services: &Services, title: &str, created_by: &str) -> String {
+        let asset = services
+            .assets()
+            .create(
+                crate::models::CreateAssetRequest {
+                    title: title.to_string(),
+                    content: None,
+                    tags: vec![],
+                    metadata: Default::default(),
+                    auth_context: None,
+                },
+                created_by,
+            )
+            .await
+            .expect("seed asset");
+        asset.id
+    }
+
+    async fn seed_relation(
+        services: &Services,
+        from: &str,
+        to: &str,
+        rtype: RelationType,
+        role: Option<&str>,
+    ) {
+        let mut metadata = std::collections::HashMap::new();
+        if let Some(r) = role {
+            metadata.insert("role".to_string(), serde_json::Value::String(r.to_string()));
+        }
+        services
+            .relations()
+            .create(
+                CreateRelationRequest {
+                    from_asset_id: from.to_string(),
+                    to_asset_id: to.to_string(),
+                    relation_type: rtype,
+                    metadata,
+                },
+                "seeder",
+            )
+            .await
+            .expect("seed relation");
+    }
+
+    /// Seed: workspace WS + owner (has_instance) + wsadmin (has_access
+    /// role=ws_admin) + member (has_access role=member). A SECOND workspace
+    /// WS2 owned by someone else for the cross-workspace negative.
+    /// Returns (ws, ws2, owner_asset, wsadmin_asset, member_asset) ids.
+    #[allow(clippy::type_complexity)]
+    async fn seed_world(services: &Services) -> (String, String, String, String, String) {
+        let ws = seed_asset(services, "workspace one", "owner").await;
+        let ws2 = seed_asset(services, "workspace two", "other").await;
+        let owner = seed_asset(services, "owner user", "owner").await;
+        let wsadmin = seed_asset(services, "wsadmin user", "wsadmin").await;
+        let member = seed_asset(services, "member user", "member").await;
+        seed_relation(services, &owner, &ws, RelationType::HasInstance, None).await;
+        seed_relation(
+            services,
+            &wsadmin,
+            &ws,
+            RelationType::HasAccess,
+            Some("ws_admin"),
+        )
+        .await;
+        seed_relation(
+            services,
+            &member,
+            &ws,
+            RelationType::HasAccess,
+            Some("member"),
+        )
+        .await;
+        (ws, ws2, owner, wsadmin, member)
+    }
+
+    async fn stamp_sub(services: &Services, asset_id: &str, sub: &str) {
+        services
+            .assets()
+            .add_tag(
+                asset_id,
+                crate::models::AddTagRequest {
+                    category: "sub".to_string(),
+                    value: sub.to_string(),
+                },
+                "seeder",
+            )
+            .await
+            .expect("sub tag");
+    }
+
+    #[tokio::test]
+    async fn owner_manages_members_everything() {
+        let services = test_services().await;
+        let authorizer = test_authorizer();
+        let (ws, _ws2, owner, _wsadmin, member) = seed_world(&services).await;
+        let claims = claims_for("owner-sub");
+        stamp_sub(&services, &owner, "owner-sub").await;
+
+        // Owner grants a ws_admin seat (requested_role=ws_admin) — OK.
+        check_membership_permission(
+            &services,
+            &authorizer,
+            &claims,
+            "ManageMembers",
+            &ws,
+            &member,
+            Some("ws_admin"),
+        )
+        .await
+        .expect("owner grants ws_admin");
+        // Owner removes any seat — OK.
+        check_membership_permission(
+            &services,
+            &authorizer,
+            &claims,
+            "ManageMembers",
+            &ws,
+            &_wsadmin,
+            None,
+        )
+        .await
+        .expect("owner removes a ws_admin seat");
+    }
+
+    #[tokio::test]
+    async fn ws_admin_manages_plain_members_only() {
+        let services = test_services().await;
+        let authorizer = test_authorizer();
+        let (ws, _ws2, _owner, wsadmin, member) = seed_world(&services).await;
+        let claims = claims_for("wsadmin-sub");
+        stamp_sub(&services, &wsadmin, "wsadmin-sub").await;
+
+        // A NEW user (no seat) — ws_admin adds them as a member: OK.
+        let newcomer = seed_asset(&services, "new user", "new").await;
+        check_membership_permission(
+            &services,
+            &authorizer,
+            &claims,
+            "ManageMembers",
+            &ws,
+            &newcomer,
+            Some("member"),
+        )
+        .await
+        .expect("ws_admin adds a member seat");
+
+        // ws_admin removes a PLAIN member: OK.
+        check_membership_permission(
+            &services,
+            &authorizer,
+            &claims,
+            "ManageMembers",
+            &ws,
+            &member,
+            None,
+        )
+        .await
+        .expect("ws_admin removes a plain member");
+
+        // SELF-ESCALATION DENIED: ws_admin grants a ws_admin seat → 403.
+        let err = check_membership_permission(
+            &services,
+            &authorizer,
+            &claims,
+            "ManageMembers",
+            &ws,
+            &newcomer,
+            Some("ws_admin"),
+        )
+        .await
+        .expect_err("ws_admin must NOT grant ws_admin seats");
+        assert!(matches!(err, ApiError::Forbidden(_)), "403, got {:?}", err);
+
+        // ws_admin removes another ws_admin seat → 403 (never the ladder).
+        let err = check_membership_permission(
+            &services,
+            &authorizer,
+            &claims,
+            "ManageMembers",
+            &ws,
+            &wsadmin,
+            None,
+        )
+        .await
+        .expect_err("ws_admin must NOT remove ws_admin seats");
+        assert!(matches!(err, ApiError::Forbidden(_)));
+    }
+
+    #[tokio::test]
+    async fn cross_workspace_negative_denies_uniformly() {
+        let services = test_services().await;
+        let authorizer = test_authorizer();
+        let (_ws, ws2, _owner, _wsadmin, _member) = seed_world(&services).await;
+        let claims = claims_for("wsadmin-sub");
+        // NOTE: the sub tag IS stamped on the wsadmin asset — the seat is on
+        // WS, not WS2; the cross-workspace write must deny regardless.
+        stamp_sub(&services, &_wsadmin, "wsadmin-sub").await;
+
+        // The ws_admin's seat is on WS — acting on WS2 (not theirs) → 403.
+        let err = check_membership_permission(
+            &services,
+            &authorizer,
+            &claims,
+            "ManageMembers",
+            &ws2,
+            &_wsadmin,
+            Some("member"),
+        )
+        .await
+        .expect_err("cross-workspace membership write must deny");
+        assert!(matches!(err, ApiError::Forbidden(_)), "uniform 403");
+
+        // Same for agent management.
+        let err = check_membership_permission(
+            &services,
+            &authorizer,
+            &claims,
+            "ManageWorkspaceAgents",
+            &ws2,
+            &_wsadmin,
+            None,
+        )
+        .await
+        .expect_err("cross-workspace agent management must deny");
+        assert!(matches!(err, ApiError::Forbidden(_)));
+    }
+
+    #[tokio::test]
+    async fn member_and_unknown_deny() {
+        let services = test_services().await;
+        let authorizer = test_authorizer();
+        let (ws, _ws2, _owner, _wsadmin, member) = seed_world(&services).await;
+
+        // A plain member: no ManageMembers at all.
+        let claims = claims_for("memb-sub");
+        stamp_sub(&services, &member, "memb-sub").await;
+        let newcomer = seed_asset(&services, "target user", "target").await;
+        let err = check_membership_permission(
+            &services,
+            &authorizer,
+            &claims,
+            "ManageMembers",
+            &ws,
+            &newcomer,
+            Some("member"),
+        )
+        .await
+        .expect_err("member must NOT manage members");
+        assert!(matches!(err, ApiError::Forbidden(_)));
+
+        // An unknown sub (no principal asset): deny — no existence leak.
+        let claims = claims_for("ghost-sub-999");
+        let err = check_membership_permission(
+            &services,
+            &authorizer,
+            &claims,
+            "ManageMembers",
+            &ws,
+            &newcomer,
+            Some("member"),
+        )
+        .await
+        .expect_err("unknown sub must NOT manage members");
+        assert!(matches!(err, ApiError::Forbidden(_)));
+    }
+
+    #[tokio::test]
+    async fn ws_admin_manages_workspace_agents() {
+        let services = test_services().await;
+        let authorizer = test_authorizer();
+        let (ws, _ws2, _owner, wsadmin, member) = seed_world(&services).await;
+        let claims = claims_for("wsadmin-sub");
+        stamp_sub(&services, &wsadmin, "wsadmin-sub").await;
+
+        check_membership_permission(
+            &services,
+            &authorizer,
+            &claims,
+            "ManageWorkspaceAgents",
+            &ws,
+            &wsadmin,
+            None,
+        )
+        .await
+        .expect("ws_admin manages their workspace's agents");
+
+        // A plain member: no agent management.
+        let claims = claims_for("memb-sub");
+        stamp_sub(&services, &member, "memb-sub").await;
+        let err = check_membership_permission(
+            &services,
+            &authorizer,
+            &claims,
+            "ManageWorkspaceAgents",
+            &ws,
+            &member,
+            None,
+        )
+        .await
+        .expect_err("member must NOT manage agents");
+        assert!(matches!(err, ApiError::Forbidden(_)));
     }
 }
