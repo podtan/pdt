@@ -423,3 +423,88 @@ mod trusted_issuers_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod enrichment_target_tests {
+    //! Enrichment follows the VALIDATED issuer (issue 895cbcea cut-over leg
+    //! — paydar's finding 2026-11-01): after the trusted-issuer fallback
+    //! validates a token minted by a non-configured issuer, enrichment must
+    //! hit THAT issuer's userinfo, and the `userinfo_url` override (a pin on
+    //! the CONFIGURED issuer's endpoint) must not hijack the request.
+
+    use crate::auth::config::AuthConfig;
+    use crate::auth::middleware::enrichment_target;
+    use pep::oidc::types::JwtClaims;
+
+    fn claims_with_iss(iss: &str) -> JwtClaims {
+        JwtClaims {
+            sub: "u-1".to_string(),
+            iss: iss.to_string(),
+            aud: None,
+            exp: 9_999_999_999,
+            iat: Some(0),
+            email: None,
+            name: None,
+            preferred_username: None,
+            extra: Default::default(),
+        }
+    }
+
+    fn config_with_override() -> AuthConfig {
+        AuthConfig {
+            issuer_url: "https://idm.tanbal.example/oauth2/openid/pdt-api".to_string(),
+            userinfo_url: Some("https://idm.tanbal.example/userinfo".to_string()),
+            ..AuthConfig::default()
+        }
+    }
+
+    #[test]
+    fn primary_token_keeps_configured_issuer_and_override() {
+        // Byte-identical primary path: validated iss == configured issuer
+        // (validation enforces it) → the configured issuer + the override
+        // as-is.
+        let config = config_with_override();
+        let claims = claims_with_iss("https://idm.tanbal.example/oauth2/openid/pdt-api");
+        let (issuer, override_url) = enrichment_target(&config, &claims);
+        assert_eq!(issuer, config.issuer_url);
+        assert_eq!(
+            override_url.as_deref(),
+            Some("https://idm.tanbal.example/userinfo")
+        );
+    }
+
+    #[test]
+    fn fallback_token_follows_the_validated_issuer() {
+        // The fallback fired: claims.iss = the token's own (allowlisted)
+        // issuer ≠ configured issuer → enrichment targets claims.iss and the
+        // override (pinned to the CONFIGURED issuer's endpoint) is dropped.
+        let config = config_with_override();
+        let claims = claims_with_iss("https://idm.podai.example/oauth2/openid/pdt-api");
+        let (issuer, override_url) = enrichment_target(&config, &claims);
+        assert_eq!(issuer, "https://idm.podai.example/oauth2/openid/pdt-api");
+        assert_eq!(override_url, None, "the override pins the configured issuer's endpoint — it must not hijack a fallback-validated request");
+    }
+
+    #[test]
+    fn trailing_slash_variants_are_the_primary_path() {
+        // Issuer equality normalizes trailing slashes (mirrors pep's
+        // issuer_matches): a trailing-slash difference between the validated
+        // iss and the configured issuer is NOT a fallback.
+        let config = config_with_override();
+        let claims = claims_with_iss("https://idm.tanbal.example/oauth2/openid/pdt-api/");
+        let (issuer, override_url) = enrichment_target(&config, &claims);
+        assert_eq!(issuer, config.issuer_url);
+        assert!(override_url.is_some());
+    }
+
+    #[test]
+    fn empty_iss_guards_to_the_configured_issuer() {
+        // Never post-validation (validation enforces iss), guarded anyway:
+        // an empty iss must not route enrichment to "".
+        let config = config_with_override();
+        let claims = claims_with_iss("");
+        let (issuer, override_url) = enrichment_target(&config, &claims);
+        assert_eq!(issuer, config.issuer_url);
+        assert!(override_url.is_some());
+    }
+}

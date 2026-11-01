@@ -83,6 +83,14 @@ fn http_response(status_line: &str, body: &str) -> String {
 }
 
 async fn spawn_mock_idp() -> MockIdp {
+    spawn_mock_idp_with(false).await
+}
+
+async fn spawn_mock_idp_strict() -> MockIdp {
+    spawn_mock_idp_with(true).await
+}
+
+async fn spawn_mock_idp_with(strict_iss: bool) -> MockIdp {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("mock IdP bind");
@@ -105,6 +113,7 @@ async fn spawn_mock_idp() -> MockIdp {
             let mode = Arc::clone(&task_mode);
             let hits = Arc::clone(&task_hits);
             let base = task_base.clone();
+            let strict_iss = strict_iss;
             tokio::spawn(async move {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let mut buf = Vec::with_capacity(2048);
@@ -132,6 +141,26 @@ async fn spawn_mock_idp() -> MockIdp {
                     http_response("200 OK", &jwks_doc())
                 } else if path.starts_with("/userinfo") {
                     hits.fetch_add(1, Ordering::SeqCst);
+                    // Strict-issuer posture: reject tokens minted by another
+                    // issuer (the real IdP behavior — a foreign token at
+                    // userinfo answers 400 invalid_request).
+                    if strict_iss {
+                        if let Some(bearer_iss) = bearer_token_iss(&req) {
+                            if bearer_iss.trim_end_matches('/') != base.trim_end_matches('/') {
+                                let _ = stream
+                                    .write_all(
+                                        http_response(
+                                            "400 Bad Request",
+                                            r#"{"error":"invalid_request"}"#,
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .await;
+                                let _ = stream.shutdown().await;
+                                return;
+                            }
+                        }
+                    }
                     let m = *mode.read().expect("mode lock");
                     match m {
                         UserinfoMode::Ok => http_response(
@@ -174,6 +203,31 @@ async fn spawn_mock_idp() -> MockIdp {
     }
 }
 
+/// Decode the `iss` claim of the request's Bearer token (strict-issuer mock
+/// posture). Returns None when no Bearer token is present or the payload
+/// doesn't decode — the strict check then falls through to the mode answer.
+fn bearer_token_iss(req: &str) -> Option<String> {
+    use base64::Engine as _;
+    let token = req.lines().find_map(|l| {
+        let lower = l.to_ascii_lowercase();
+        if lower.starts_with("authorization:") {
+            l.split_once(':')?
+                .1
+                .trim()
+                .strip_prefix("Bearer ")
+                .map(|t| t.trim().to_string())
+        } else {
+            None
+        }
+    })?;
+    let payload_b64 = token.split('.').nth(1)?;
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&payload).ok()?;
+    claims.get("iss")?.as_str().map(|s| s.to_string())
+}
+
 impl MockIdp {
     fn set_mode(&self, m: UserinfoMode) {
         *self.mode.write().expect("mode lock") = m;
@@ -204,6 +258,18 @@ fn pdt_binary_path() -> PathBuf {
 }
 
 async fn spawn_pdt(idp: &MockIdp) -> PdtProcess {
+    spawn_pdt_with(idp, idp, None).await
+}
+
+/// Variant launcher for the trusted-issuers IT gate: `configured` is the
+/// AUTH_ISSUER_URL (+ the userinfo override pinned to IT — proving the
+/// override must not hijack a fallback-validated request), `trusted` arms
+/// AUTH_TRUSTED_ISSUERS (the 0.3.23 knob).
+async fn spawn_pdt_with(
+    configured: &MockIdp,
+    userinfo_override: &MockIdp,
+    trusted: Option<&str>,
+) -> PdtProcess {
     let bin = pdt_binary_path();
     assert!(
         bin.exists(),
@@ -230,17 +296,24 @@ async fn spawn_pdt(idp: &MockIdp) -> PdtProcess {
     let stdout_file = std::fs::File::create(dir.join("pdt-stdout.log")).expect("stdout log");
     let stderr_file = std::fs::File::create(dir.join("pdt-stderr.log")).expect("stderr log");
 
-    let child = tokio::process::Command::new(&bin)
-        .env("PDT_DB_BACKEND", "sqlite")
+    let mut cmd = tokio::process::Command::new(&bin);
+    cmd.env("PDT_DB_BACKEND", "sqlite")
         .env("SQLITE_PATH", dir.join("root.db"))
         .env("PDT_INSTANCES_DIR", dir.join("instances"))
         .env("PDT_HOST", "127.0.0.1")
         .env("PDT_PORT", port.to_string())
         .env("AUTH_ENABLED", "true")
-        .env("AUTH_ISSUER_URL", &idp.base)
-        .env("AUTH_USERINFO_URL", format!("{}/userinfo", idp.base))
+        .env("AUTH_ISSUER_URL", &configured.base)
+        .env(
+            "AUTH_USERINFO_URL",
+            format!("{}/userinfo", userinfo_override.base),
+        )
         .env("CEDAR_ENABLED", "true")
-        .env("RUST_LOG", "info")
+        .env("RUST_LOG", "info");
+    if let Some(trusted) = trusted {
+        cmd.env("AUTH_TRUSTED_ISSUERS", trusted);
+    }
+    let child = cmd
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file))
         .spawn()
@@ -781,4 +854,134 @@ async fn role_gate_falls_back_to_registry_for_claimless_admin_tokens() {
         "enriched role=admin token must still pass (token-claim path unchanged)"
     );
     eprintln!("OBSERVED enriched role=admin token → 200 (token-claim path unchanged)");
+}
+
+// ─────────── enrichment follows the VALIDATED issuer (895cbcea) ───────────
+//
+// IT gate for the enrichment-issuer delta (paydar's finding 2026-11-01,
+// journaled 04:18:01Z on petit): after the trusted-issuer fallback validates
+// a token minted by a NON-configured issuer, enrichment against the
+// CONFIGURED issuer hits the wrong IdP with a foreign token → 400
+// invalid_request → fail-closed 401. Podai pdt-api tokens validated
+// cryptographically but stopped at enrichment — cut-over legs (b)/(c) could
+// not turn green on 0.3.23 alone.
+//
+// The mock: BOTH IdPs are STRICT (userinfo decodes the Bearer token's iss
+// and 400s foreign tokens — the real IdP behavior). pdt runs with
+// AUTH_ISSUER_URL=A, AUTH_USERINFO_URL pinned to A (the override), and
+// AUTH_TRUSTED_ISSUERS=B. A B-minted token must:
+//   1. fail primary validation at A (iss mismatch),
+//   2. pass the fallback at B (allowlisted, iss enforced to the token's own),
+//   3. enrich against B's userinfo — A's strict userinfo would 400 the
+//      foreign token, so a 200 proves the enrichment followed the validated
+//      issuer AND that the override did not hijack the request.
+#[tokio::test]
+async fn fallback_validated_token_enriches_against_its_own_issuer() {
+    let idp_a = spawn_mock_idp_strict().await; // configured issuer (override pinned here)
+    let idp_b = spawn_mock_idp_strict().await; // trusted issuer — strict userinfo
+    let pdt = spawn_pdt_with(&idp_a, &idp_a, Some(&idp_b.base)).await;
+    let client = wait_health(&pdt.base).await;
+    eprintln!(
+        "OBSERVED pdt up at {} (configured IdP {}, trusted strict IdP {})",
+        pdt.base, idp_a.base, idp_b.base
+    );
+
+    // ── phase 1: PRIMARY-ISSUER CONTROL — token from A, path unchanged ──
+    let auth_a = |sub: &str| format!("Bearer {}", sign_token(&idp_a.base, sub));
+    let resp = client
+        .post(format!("{}/api/assets", pdt.base))
+        .header("Authorization", auth_a("primary-control"))
+        .json(&serde_json::json!({
+            "title": "enrichment-issuer control 895cbcea",
+            "content": "primary-issuer token — configured path unchanged",
+            "auth_context": {
+                "visibility": "team",
+                "owner_groups": [GROUP],
+            },
+        }))
+        .send()
+        .await
+        .expect("primary control create");
+    let status = resp.status();
+    assert!(
+        status.is_success(),
+        "primary-issuer control must pass unchanged (got {status})"
+    );
+    let a_hits_after_control = idp_a.userinfo_hits.load(Ordering::SeqCst);
+    assert!(
+        a_hits_after_control >= 1,
+        "control: enrichment for the A-token must hit A's userinfo (got {a_hits_after_control})"
+    );
+
+    // ── phase 2: FALLBACK TOKEN — minted by B (strict), allowlisted ──
+    let auth_b = |sub: &str| format!("Bearer {}", sign_token(&idp_b.base, sub));
+    let resp = client
+        .post(format!("{}/api/assets", pdt.base))
+        .header("Authorization", auth_b("fallback-agent"))
+        .json(&serde_json::json!({
+            "title": "enrichment-issuer fallback canary 895cbcea",
+            "content": "fallback-validated token must enrich against its OWN issuer",
+            "auth_context": {
+                "visibility": "team",
+                "owner_groups": [GROUP],
+            },
+        }))
+        .send()
+        .await
+        .expect("fallback create");
+    let status = resp.status();
+    assert!(
+        status.is_success(),
+        "fallback-validated token must enrich against its OWN issuer and pass \
+         (got {status}) — enrichment against the configured issuer would 400 \
+         the foreign token at A's strict userinfo (fail-closed 401)"
+    );
+
+    // The enrichment landed on B, not A: A's userinfo hit-count is unchanged
+    // since the control (the B token never touched A's userinfo), and B's
+    // userinfo served the enrichment.
+    let a_hits_after_fallback = idp_a.userinfo_hits.load(Ordering::SeqCst);
+    assert_eq!(
+        a_hits_after_fallback, a_hits_after_control,
+        "the B-minted token's enrichment must NOT hit the configured issuer's userinfo"
+    );
+    assert!(
+        idp_b.userinfo_hits.load(Ordering::SeqCst) >= 1,
+        "the B-minted token's enrichment must hit B's userinfo (the validated issuer)"
+    );
+
+    // The enriched B-principal reads its own cohort's data end-to-end.
+    let resp = client
+        .get(format!("{}/api/search", pdt.base))
+        .query(&[("q", "enrichment-issuer fallback canary")])
+        .header("Authorization", auth_b("fallback-agent"))
+        .send()
+        .await
+        .expect("fallback search");
+    assert_eq!(
+        resp.status(),
+        200,
+        "enriched fallback principal must read 200"
+    );
+    let body: serde_json::Value = resp.json().await.expect("search body");
+    let hit = body["data"]
+        .as_array()
+        .expect("data array")
+        .iter()
+        .any(|r| {
+            r["title"]
+                .as_str()
+                .map(|t| t.contains("fallback canary"))
+                .unwrap_or(false)
+        });
+    assert!(
+        hit,
+        "the fallback-created canary must be visible to the enriched B-principal"
+    );
+
+    eprintln!(
+        "OBSERVED receipts: A userinfo_hits={} , B userinfo_hits={} — enrichment followed the validated issuer",
+        idp_a.userinfo_hits.load(Ordering::SeqCst),
+        idp_b.userinfo_hits.load(Ordering::SeqCst)
+    );
 }

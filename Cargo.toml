@@ -1,6 +1,6 @@
 [package]
 name = "pdt"
-version = "0.3.23"
+version = "0.3.24"
 edition = "2021"
 description = "Asset store API with relation graphs, tagging, full-text search, multi-instance SQLite tenancy, OIDC auth and Cedar authorization"
 license = "MIT OR Apache-2.0"
@@ -71,3 +71,6 @@ tokio-test = "0.4"
 # IT-only: signing throwaway tokens against the in-process mock IdP
 # (same major as pep's own dependency — dedupes to one build).
 jsonwebtoken = "9.3"
+# IT-only: decoding the token's iss claim in the strict-issuer mock userinfo
+# handler (already in the tree via pep — zero new vendor cost).
+base64 = "0.22"

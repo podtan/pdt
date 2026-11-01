@@ -53,6 +53,41 @@ pub fn classify_enrichment(claims: &JwtClaims) -> AuthEnrichment {
     }
 }
 
+/// Issuer equality with trailing-slash normalization (mirrors pep's private
+/// `issuer_matches` — string-level comparison only).
+fn issuer_matches(a: &str, b: &str) -> bool {
+    a.trim_end_matches('/') == b.trim_end_matches('/')
+}
+
+/// Enrichment-issuer selection (issue 895cbcea cut-over leg — paydar's
+/// finding 2026-11-01, journaled 04:18:01Z): `validate_jwt_with_options` can
+/// return claims minted by a TRUSTED non-configured issuer (the per-token
+/// fallback validated the token against its own issuer). Enrichment against
+/// the CONFIGURED issuer then hits the wrong IdP with a foreign token →
+/// 400 invalid_request → fail-closed 401: podai pdt-api tokens validate
+/// cryptographically but stop at enrichment.
+///
+/// Returns `(issuer, userinfo_override)` for the enrichment call:
+/// - Primary path (validated iss == configured issuer, modulo trailing
+///   slash): byte-identical — the configured issuer + the operator's
+///   `userinfo_url` override as-is.
+/// - Fallback path: enrichment follows the VALIDATED issuer (claims.iss,
+///   enforced by the fallback to the token's own issuer). The
+///   `userinfo_url` override pins the CONFIGURED issuer's endpoint — it
+///   must not hijack a fallback-validated request, so it is dropped here.
+/// - Empty iss (never post-validation, guarded anyway): configured issuer.
+pub(crate) fn enrichment_target(
+    config: &AuthConfig,
+    claims: &JwtClaims,
+) -> (String, Option<String>) {
+    let validated = claims.iss.trim();
+    if validated.is_empty() || issuer_matches(validated, &config.issuer_url) {
+        (config.issuer_url.clone(), config.userinfo_url.clone())
+    } else {
+        (claims.iss.clone(), None)
+    }
+}
+
 #[derive(Clone)]
 pub struct AuthLayer {
     config: AuthConfig,
@@ -148,12 +183,21 @@ where
                     // journaled at WARN. The previous "non-fatal" swallow let a
                     // role-less principal fall through to the viewer default →
                     // default-deny → a silent 403 that lied about authz.
+                    // Enrichment follows the VALIDATED issuer (issue 895cbcea
+                    // cut-over leg): after the trusted-issuer fallback
+                    // validates a token minted by a non-configured issuer,
+                    // enrichment must hit THAT issuer's userinfo — the
+                    // configured issuer rejects the foreign token
+                    // (400 invalid_request → fail-closed 401). No-op on the
+                    // primary path (validation enforced iss == configured).
+                    let (enrichment_issuer, userinfo_override) =
+                        enrichment_target(&config, &claims);
                     if let Err(e) = client
                         .enrich_claims_with_userinfo(
                             &mut claims,
                             &token,
-                            &config.issuer_url,
-                            config.userinfo_url.as_deref(),
+                            &enrichment_issuer,
+                            userinfo_override.as_deref(),
                         )
                         .await
                     {
