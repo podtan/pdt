@@ -175,6 +175,9 @@ impl Config {
                     .parse()
                     .unwrap_or(false),
                 userinfo_url: env::var("AUTH_USERINFO_URL").ok(),
+                trusted_issuers: AuthConfig::parse_trusted_issuers(
+                    env::var("AUTH_TRUSTED_ISSUERS").ok(),
+                ),
             },
             cedar,
         })

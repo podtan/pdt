@@ -64,6 +64,7 @@ fn auth_config(enabled: bool, dev_mode: bool) -> AuthConfig {
         expected_audience: None,
         dev_mode,
         userinfo_url: None,
+        trusted_issuers: None,
     }
 }
 

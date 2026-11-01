@@ -15,7 +15,6 @@ use pdt::repository::{
 use pdt::router::build_router;
 use pdt::service::Services;
 use pdt::tenant::TenantPoolManager;
-use pep::oidc_resource_server::ResourceServerClient;
 
 #[cfg(feature = "sqlite-backend")]
 use pdt::repository::{
@@ -133,7 +132,19 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Initialize auth
-    let auth_client = ResourceServerClient::new();
+    // Trusted-issuer allowlist (issue 895cbcea, the 0.3.23 knob): the
+    // assembly lives in the lib (pdt::auth::build_auth_client) so the gate
+    // tests exercise the exact production shape — unset/empty = the client
+    // is constructed WITHOUT the knob, byte-identical strict single-issuer
+    // validation (fail-closed preserved, the pep law).
+    let auth_client = pdt::auth::build_auth_client(&config.auth);
+    match config.auth.trusted_issuers.as_deref() {
+        Some(list) if !list.is_empty() => tracing::info!(
+            "Trusted-issuer allowlist armed: {} issuer(s) beyond the configured issuer",
+            list.len()
+        ),
+        _ => tracing::info!("Trusted-issuer allowlist unset — strict single-issuer validation"),
+    }
     let auth_layer = AuthLayer::new(config.auth.clone(), auth_client);
     tracing::info!("Auth layer initialized (enabled: {})", config.auth.enabled);
 

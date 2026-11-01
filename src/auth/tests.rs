@@ -22,6 +22,7 @@ mod config_tests {
             expected_audience: Some("custom-api".to_string()),
             dev_mode: true,
             userinfo_url: Some("https://auth.example.com/userinfo".to_string()),
+            trusted_issuers: None,
         };
         assert!(!config.enabled);
         assert_eq!(config.issuer_url, "https://auth.example.com");
@@ -41,6 +42,7 @@ mod config_tests {
             expected_audience: None,
             dev_mode: false,
             userinfo_url: None,
+            trusted_issuers: None,
         };
         assert!(config.expected_audience.is_none());
         assert!(config.userinfo_url.is_none());
@@ -208,6 +210,7 @@ mod auth_config_integration_tests {
             expected_audience: Some("test-api".to_string()),
             dev_mode: false,
             userinfo_url: None,
+            trusted_issuers: None,
         };
 
         let config2 = config1.clone();
@@ -237,6 +240,7 @@ mod auth_config_integration_tests {
                 "https://keycloak.example.com/auth/realms/myrealm/protocol/openid-connect/userinfo"
                     .to_string(),
             ),
+            trusted_issuers: None,
         };
 
         assert!(config.enabled);
@@ -301,5 +305,121 @@ mod enrichment_classification {
         // email/jti etc. are not authorization material.
         let claims = claims_with(&[("email", serde_json::json!("a@b.c"))]);
         assert_eq!(classify_enrichment(&claims), AuthEnrichment::Degraded);
+    }
+}
+
+#[cfg(test)]
+mod trusted_issuers_tests {
+    //! The 0.3.23 trusted-issuers knob (issue 895cbcea — the CPO IdP
+    //! cut-over re-arm, gate-1 duty per issuer-law v2).
+
+    use crate::auth::build_auth_client;
+    use crate::auth::config::AuthConfig;
+
+    #[test]
+    fn test_parse_csv_two_issuers() {
+        let parsed = AuthConfig::parse_trusted_issuers(Some(
+            "https://idm.podai.ir,https://idm.example.com".to_string(),
+        ));
+        assert_eq!(
+            parsed,
+            Some(vec![
+                "https://idm.podai.ir".to_string(),
+                "https://idm.example.com".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_trims_and_normalizes_trailing_slashes() {
+        let parsed = AuthConfig::parse_trusted_issuers(Some(
+            "  https://idm.podai.ir/  , https://idm.example.com ".to_string(),
+        ));
+        assert_eq!(
+            parsed,
+            Some(vec![
+                "https://idm.podai.ir".to_string(),
+                "https://idm.example.com".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_parse_drops_empties() {
+        let parsed =
+            AuthConfig::parse_trusted_issuers(Some("https://idm.podai.ir,, ,".to_string()));
+        assert_eq!(parsed, Some(vec!["https://idm.podai.ir".to_string()]));
+    }
+
+    #[test]
+    fn test_parse_unset_is_none() {
+        assert_eq!(AuthConfig::parse_trusted_issuers(None), None);
+    }
+
+    #[test]
+    fn test_parse_empty_string_is_none() {
+        assert_eq!(AuthConfig::parse_trusted_issuers(Some(String::new())), None);
+    }
+
+    #[test]
+    fn test_parse_all_empty_csv_is_none() {
+        assert_eq!(
+            AuthConfig::parse_trusted_issuers(Some(" , ,".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn test_default_config_has_no_allowlist() {
+        let config = AuthConfig::default();
+        assert_eq!(config.trusted_issuers, None);
+    }
+
+    /// THE BYTE-IDENTICAL LAW: unset/empty allowlist → the client is
+    /// constructed WITHOUT the knob — trusted_issuers stays EMPTY (strict
+    /// single-issuer, fail-closed preserved).
+    #[tokio::test]
+    async fn test_build_auth_client_unset_is_byte_identical() {
+        let config = AuthConfig {
+            trusted_issuers: None,
+            ..AuthConfig::default()
+        };
+        let client = build_auth_client(&config);
+        assert!(
+            client.trusted_issuers.is_empty(),
+            "unset allowlist must construct WITHOUT the knob — got {:?}",
+            client.trusted_issuers
+        );
+
+        let config_empty = AuthConfig {
+            trusted_issuers: Some(Vec::new()),
+            ..AuthConfig::default()
+        };
+        let client_empty = build_auth_client(&config_empty);
+        assert!(
+            client_empty.trusted_issuers.is_empty(),
+            "empty allowlist must construct WITHOUT the knob"
+        );
+    }
+
+    /// The armed path: a non-empty allowlist lands on the client,
+    /// normalized (trimmed, trailing slashes dropped).
+    #[tokio::test]
+    async fn test_build_auth_client_armed_lands_the_allowlist() {
+        let config = AuthConfig {
+            trusted_issuers: Some(vec![
+                "https://idm.podai.ir/".to_string(),
+                "  https://idm.example.com  ".to_string(),
+            ]),
+            ..AuthConfig::default()
+        };
+        let client = build_auth_client(&config);
+        assert_eq!(
+            client.trusted_issuers,
+            vec![
+                "https://idm.podai.ir".to_string(),
+                "https://idm.example.com".to_string()
+            ]
+        );
     }
 }
