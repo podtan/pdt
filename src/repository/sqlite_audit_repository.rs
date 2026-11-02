@@ -31,6 +31,7 @@ impl SqliteAuditRepository {
             "add_member" => AuditAction::AddMember,
             "remove_member" => AuditAction::RemoveMember,
             "admin_bypass" => AuditAction::AdminBypass,
+            "adopt" => AuditAction::Adopt,
             _ => AuditAction::Update,
         }
     }

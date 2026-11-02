@@ -22,6 +22,7 @@ pub enum AuditAction {
     AddMember,
     RemoveMember,
     AdminBypass,
+    Adopt,
 }
 
 impl std::fmt::Display for AuditAction {
@@ -39,6 +40,7 @@ impl std::fmt::Display for AuditAction {
             AuditAction::AddMember => write!(f, "add_member"),
             AuditAction::RemoveMember => write!(f, "remove_member"),
             AuditAction::AdminBypass => write!(f, "admin_bypass"),
+            AuditAction::Adopt => write!(f, "adopt"),
         }
     }
 }

@@ -12,8 +12,8 @@ use crate::auth::{AuthenticatedUser, Enrichment};
 use crate::cedar::enforcement::TenantState;
 use crate::error::{ApiError, Result};
 use crate::models::{
-    AddTagRequest, Asset, CreateAssetRequest, PaginatedResponse, Tag, UpdateAssetRequest,
-    UpdateAuthContextRequest,
+    AddTagRequest, AdoptAssetRequest, Asset, CreateAssetRequest, PaginatedResponse, Tag,
+    UpdateAssetRequest, UpdateAuthContextRequest,
 };
 use crate::service::AssetService;
 
@@ -72,6 +72,58 @@ pub async fn create_asset(
     let caller_groups = extract_caller_groups(&user);
 
     let asset = AssetService::create(tx.services(), request, user_id, &caller_groups).await?;
+    Ok(Json(asset))
+}
+
+/// ADOPT an asset with a SPECIFIED id (same-uuid materialization — CPO
+/// ruling 6d86ee70, the Path A adopt's first-class path).
+///
+/// Custody: PLATFORM-ADMIN only (role=admin) — an adopt is a
+/// restore-with-custody, not a birth. Duplicate-barred (409 if the uuid
+/// exists live or soft-deleted). Provenance REQUIRED (400 if absent) —
+/// the call names the banked source. Audited ATOMICALLY with the
+/// materialization: a failed audit write denies the adopt.
+#[utoipa::path(
+    post,
+    path = "/api/assets/{id}/adopt",
+    params(
+        ("id" = String, Path, description = "The SPECIFIED uuid to materialize (the locked row's original id)"),
+    ),
+    request_body = AdoptAssetRequest,
+    responses(
+        (status = 200, description = "Asset adopted", body = Asset),
+        (status = 400, description = "Validation error (empty title / missing provenance)"),
+        (status = 403, description = "Custody: platform-admin only"),
+        (status = 409, description = "Duplicate-barred: the uuid already exists in this store"),
+    ),
+    tag = "assets",
+)]
+pub async fn adopt_asset(
+    tx: TenantState,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Json(request): Json<AdoptAssetRequest>,
+) -> Result<Json<Asset>> {
+    // CUSTODY (ruling 6d86ee70): platform-admin only.
+    let claims = extract_claims(&user);
+    let is_platform_admin = claims
+        .extra
+        .get("role")
+        .map(|r| match r {
+            serde_json::Value::String(s) => s == "admin",
+            serde_json::Value::Array(arr) => {
+                arr.iter().filter_map(|v| v.as_str()).any(|s| s == "admin")
+            }
+            _ => false,
+        })
+        .unwrap_or(false);
+    if !is_platform_admin {
+        return Err(ApiError::Forbidden(
+            "Access denied: adopt custody is platform-admin only (ruling 6d86ee70)".to_string(),
+        ));
+    }
+
+    let asset = AssetService::adopt(tx.services(), &id, request, &user.user_id).await?;
     Ok(Json(asset))
 }
 

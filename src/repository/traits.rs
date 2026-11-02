@@ -105,6 +105,27 @@ pub trait AssetRepository: Send + Sync {
 
     /// Update the auth_context of an asset.
     async fn update_auth_context(&self, id: &str, auth_context: &AuthContext) -> Result<Asset>;
+
+    /// ADOPT: materialize an asset with a SPECIFIED id (same-uuid adopt —
+    /// CPO ruling 6d86ee70, the Path A adopt's first-class path; replaces
+    /// the barred direct-sqlite restore).
+    ///
+    /// - duplicate-barred: refuses loudly if the id exists live OR
+    ///   soft-deleted (the PK is the hard bar — an adopt over a
+    ///   soft-deleted row would be a resurrection, a different operation).
+    /// - audited ATOMICALLY: the audit entry (action=adopt, provenance in
+    ///   changes) and the asset land in ONE transaction — a failed audit
+    ///   write DENIES the adopt (unaudited materialization = silent
+    ///   widening, fail-loud).
+    /// - additive: plain create keeps minting new uuids; birth semantics
+    ///   untouched.
+    async fn adopt(
+        &self,
+        id: &str,
+        request: CreateAssetRequest,
+        user_id: &str,
+        provenance: &str,
+    ) -> Result<Asset>;
 }
 
 /// Repository for relation operations.

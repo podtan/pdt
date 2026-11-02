@@ -29,6 +29,7 @@ use utoipa::OpenApi;
         crate::handlers::assets::add_tag,
         crate::handlers::assets::remove_tag,
         crate::handlers::assets::update_auth_context,
+        crate::handlers::assets::adopt_asset,
         // Relation routes
         crate::handlers::relations::create_relation,
         crate::handlers::relations::get_relation,
@@ -76,6 +77,7 @@ use utoipa::OpenApi;
         crate::handlers::health::HealthResponse,
         crate::models::Asset,
         crate::models::CreateAssetRequest,
+        crate::models::AdoptAssetRequest,
         crate::models::UpdateAssetRequest,
         crate::models::UpdateAuthContextRequest,
         crate::models::AuthContext,

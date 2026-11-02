@@ -12,7 +12,7 @@ use sqlx::SqlitePool;
 
 use pdt::repository::{
     AssetRepository, RelationRepository, SqliteAssetRepository, SqliteAuditRepository,
-    SqliteCollectionRepository, SqliteRelationRepository,
+    SqliteCollectionRepository, SqliteGroupRepository, SqliteRelationRepository,
 };
 
 /// Create a fresh in-memory SQLite database with migrations applied.
@@ -66,85 +66,85 @@ async fn setup_repos() -> (
 
 #[tokio::test]
 async fn sqlite_asset_create_and_get() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_create_and_get(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_get_by_id_not_found() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_get_by_id_not_found(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_update() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_update(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_soft_delete() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_soft_delete(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_exists_including_deleted() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_exists_including_deleted(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_list_with_pagination() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_list_with_pagination(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_list_filter_by_tag() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_list_filter_by_tag(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_search_by_text() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_search_by_text(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_search_no_results() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_search_no_results(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_search_no_query() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_search_no_query(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_search_with_tag_filter() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_search_with_tag_filter(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_search_cursor_pagination_and_created_at() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_search_cursor_pagination_and_created_at(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_add_and_remove_tag() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_add_and_remove_tag(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_update_auth_context() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_update_auth_context(&assets).await;
 }
 
@@ -154,7 +154,7 @@ async fn sqlite_asset_update_auth_context() {
 
 #[tokio::test]
 async fn sqlite_relation_create_and_get() {
-    let (assets, relations, _, _) = setup_repos().await;
+    let (assets, relations, _, _, _) = setup_repos().await;
     common::relation_create_and_get(&assets, &relations).await;
 }
 
@@ -164,7 +164,7 @@ async fn sqlite_relation_has_access_round_trip() {
     // the sqlite parse mapping must round-trip it, never swallow it to
     // related_to (the silent-swallow class, parse_relation_type `_` arm).
     use pdt::models::{CreateAssetRequest, CreateRelationRequest, RelationType};
-    let (assets, relations, _, _) = setup_repos().await;
+    let (assets, relations, _, _, _) = setup_repos().await;
 
     // FK-constrained: both endpoints must exist as assets first; create
     // returns the server-assigned id.
@@ -223,43 +223,43 @@ async fn sqlite_relation_has_access_round_trip() {
 
 #[tokio::test]
 async fn sqlite_relation_get_by_id_not_found() {
-    let (_, relations, _, _) = setup_repos().await;
+    let (_, relations, _, _, _) = setup_repos().await;
     common::relation_get_by_id_not_found(&relations).await;
 }
 
 #[tokio::test]
 async fn sqlite_relation_delete() {
-    let (_, relations, _, _) = setup_repos().await;
+    let (_, relations, _, _, _) = setup_repos().await;
     common::relation_delete(&relations).await;
 }
 
 #[tokio::test]
 async fn sqlite_relation_get_asset_relations() {
-    let (assets, relations, _, _) = setup_repos().await;
+    let (assets, relations, _, _, _) = setup_repos().await;
     common::relation_get_asset_relations(&assets, &relations).await;
 }
 
 #[tokio::test]
 async fn sqlite_relation_delete_by_asset() {
-    let (assets, relations, _, _) = setup_repos().await;
+    let (assets, relations, _, _, _) = setup_repos().await;
     common::relation_delete_by_asset(&assets, &relations).await;
 }
 
 #[tokio::test]
 async fn sqlite_relation_traverse_graph() {
-    let (assets, relations, _, _) = setup_repos().await;
+    let (assets, relations, _, _, _) = setup_repos().await;
     common::relation_traverse_graph(&assets, &relations).await;
 }
 
 #[tokio::test]
 async fn sqlite_relation_get_descendants() {
-    let (assets, relations, _, _) = setup_repos().await;
+    let (assets, relations, _, _, _) = setup_repos().await;
     common::relation_get_descendants(&assets, &relations).await;
 }
 
 #[tokio::test]
 async fn sqlite_relation_would_create_cycle() {
-    let (assets, relations, _, _) = setup_repos().await;
+    let (assets, relations, _, _, _) = setup_repos().await;
     common::relation_would_create_cycle(&assets, &relations).await;
 }
 
@@ -269,43 +269,43 @@ async fn sqlite_relation_would_create_cycle() {
 
 #[tokio::test]
 async fn sqlite_collection_create_and_get() {
-    let (_, _, collections, _) = setup_repos().await;
+    let (_, _, collections, _, _) = setup_repos().await;
     common::collection_create_and_get(&collections).await;
 }
 
 #[tokio::test]
 async fn sqlite_collection_get_by_id_not_found() {
-    let (_, _, collections, _) = setup_repos().await;
+    let (_, _, collections, _, _) = setup_repos().await;
     common::collection_get_by_id_not_found(&collections).await;
 }
 
 #[tokio::test]
 async fn sqlite_collection_update() {
-    let (_, _, collections, _) = setup_repos().await;
+    let (_, _, collections, _, _) = setup_repos().await;
     common::collection_update(&collections).await;
 }
 
 #[tokio::test]
 async fn sqlite_collection_delete() {
-    let (_, _, collections, _) = setup_repos().await;
+    let (_, _, collections, _, _) = setup_repos().await;
     common::collection_delete(&collections).await;
 }
 
 #[tokio::test]
 async fn sqlite_collection_list_with_pagination() {
-    let (_, _, collections, _) = setup_repos().await;
+    let (_, _, collections, _, _) = setup_repos().await;
     common::collection_list_with_pagination(&collections).await;
 }
 
 #[tokio::test]
 async fn sqlite_collection_add_and_remove_asset() {
-    let (assets, _, collections, _) = setup_repos().await;
+    let (assets, _, collections, _, _) = setup_repos().await;
     common::collection_add_and_remove_asset(&assets, &collections).await;
 }
 
 #[tokio::test]
 async fn sqlite_collection_remove_asset_from_all() {
-    let (assets, _, collections, _) = setup_repos().await;
+    let (assets, _, collections, _, _) = setup_repos().await;
     common::collection_remove_asset_from_all(&assets, &collections).await;
 }
 
@@ -315,19 +315,19 @@ async fn sqlite_collection_remove_asset_from_all() {
 
 #[tokio::test]
 async fn sqlite_audit_create_and_list() {
-    let (_, _, _, audit) = setup_repos().await;
+    let (_, _, _, audit, _) = setup_repos().await;
     common::audit_create_and_list(&audit).await;
 }
 
 #[tokio::test]
 async fn sqlite_audit_list_with_filters() {
-    let (_, _, _, audit) = setup_repos().await;
+    let (_, _, _, audit, _) = setup_repos().await;
     common::audit_list_with_filters(&audit).await;
 }
 
 #[tokio::test]
 async fn sqlite_audit_get_entity_history() {
-    let (_, _, _, audit) = setup_repos().await;
+    let (_, _, _, audit, _) = setup_repos().await;
     common::audit_get_entity_history(&audit).await;
 }
 
@@ -337,7 +337,7 @@ async fn sqlite_audit_get_entity_history() {
 
 #[tokio::test]
 async fn sqlite_asset_delete_cascades() {
-    let (assets, relations, collections, audit) = setup_repos().await;
+    let (assets, relations, collections, audit, groups) = setup_repos().await;
     common::asset_delete_cascades(&assets, &relations, &collections, &audit).await;
 }
 
@@ -353,7 +353,7 @@ async fn sqlite_asset_delete_cascades() {
 
 #[tokio::test]
 async fn sqlite_search_survives_fts5_metacharacter_queries() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     assets
         .create(
             common::make_asset_request("Dispatch Guide", "rotate trustee creds"),
@@ -390,7 +390,7 @@ async fn sqlite_search_survives_fts5_metacharacter_queries() {
 
 #[tokio::test]
 async fn sqlite_search_still_finds_assets_through_sanitized_phrases() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     assets
         .create(
             common::make_asset_request("Integration Probe", "dispatch wiring بانک"),
@@ -436,13 +436,13 @@ async fn sqlite_search_still_finds_assets_through_sanitized_phrases() {
 
 #[tokio::test]
 async fn sqlite_asset_search_compact_omits_content() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_search_compact_omits_content(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_get_contents_batch() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_get_contents_batch(&assets).await;
 }
 
@@ -650,13 +650,13 @@ async fn prune_age_filter_matches_only_older_than_window() {
 
 #[tokio::test]
 async fn sqlite_asset_count_search_matches_filter() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_count_search_matches_filter(&assets).await;
 }
 
 #[tokio::test]
 async fn sqlite_asset_count_list_matches_filter() {
-    let (assets, _, _, _) = setup_repos().await;
+    let (assets, _, _, _, _) = setup_repos().await;
     common::asset_count_list_matches_filter(&assets).await;
 }
 
@@ -781,5 +781,223 @@ async fn asset_delete_audit_carries_cascade_relations() {
         assert!(r["from_asset_id"].is_string(), "from endpoint carried");
         assert!(r["to_asset_id"].is_string(), "to endpoint carried");
         assert!(r["relation_type"].is_string(), "relation type carried");
+    }
+}
+
+// ============================================================================
+// ADOPT GUARDS (CPO ruling 6d86ee70 — the Path A adopt's first-class path)
+// ============================================================================
+
+mod adopt_guards {
+    //! The ruling's two GUARDS + the happy path, standalone verbatim
+    //! (release checklist v3):
+    //! - duplicate-refusal: an adopt over an existing uuid refuses loudly
+    //!   (409 class) and the store keeps exactly ONE copy;
+    //! - audit-write-DENIES: a failed audit write rolls the whole adopt
+    //!   back — the asset is ABSENT (unaudited materialization = silent
+    //!   widening, machine-enforced by the transaction);
+    //! - happy path: the adopt lands + the audit entry (action=adopt,
+    //!   provenance in changes) exists;
+    //! - provenance required.
+
+    use pdt::error::ApiError;
+    use pdt::models::{AdoptAssetRequest, AuditAction, CreateAssetRequest};
+    use pdt::repository::SqliteAssetRepository;
+    use pdt::service::AssetService;
+    use pdt::service::Services;
+
+    async fn setup_repos() -> (
+        SqliteAssetRepository,
+        SqliteAssetRepository,
+        pdt::repository::SqliteAuditRepository,
+        pdt::repository::SqliteRelationRepository,
+        pdt::repository::SqliteCollectionRepository,
+        pdt::repository::SqliteGroupRepository,
+        sqlx::SqlitePool,
+    ) {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("in-memory sqlite");
+        let migration_sql = include_str!("../migrations/sqlite/001_initial.sql");
+        sqlx::raw_sql(migration_sql)
+            .execute(&pool)
+            .await
+            .expect("migrations");
+        let groups_sql = include_str!("../migrations/sqlite/002_groups.sql");
+        sqlx::raw_sql(groups_sql)
+            .execute(&pool)
+            .await
+            .expect("groups migrations");
+        (
+            SqliteAssetRepository::new(pool.clone()),
+            SqliteAssetRepository::new(pool.clone()),
+            pdt::repository::SqliteAuditRepository::new(pool.clone()),
+            pdt::repository::SqliteRelationRepository::new(pool.clone()),
+            pdt::repository::SqliteCollectionRepository::new(pool.clone()),
+            pdt::repository::SqliteGroupRepository::new(pool.clone()),
+            pool,
+        )
+    }
+
+    fn adopt_request(title: &str, provenance: &str) -> AdoptAssetRequest {
+        AdoptAssetRequest {
+            title: title.to_string(),
+            content: Some("adopted body".to_string()),
+            tags: vec![],
+            metadata: Default::default(),
+            auth_context: None,
+            provenance: provenance.to_string(),
+        }
+    }
+
+    const LOCKED_ID: &str = "78398674-e25b-449a-9e7c-544511d398aa";
+    const BANKED_SOURCE: &str = "pre-dirauth leaf backup /var/lib/pdt-backups/leaf-a4613285-pre-dirauth-20261101T0023Z.db (00:23Z Nov 1)";
+
+    /// GUARD 1 — DUPLICATE-REFUSAL: an adopt over an existing uuid refuses
+    /// loudly; the store keeps exactly ONE copy.
+    #[tokio::test]
+    async fn duplicate_refusal() {
+        let (assets, _assets2, audit, relations, collections, groups, _pool) = setup_repos().await;
+        let services = Services::from_repositories(assets, relations, collections, audit, groups);
+
+        // First adopt lands.
+        let adopted = AssetService::adopt(
+            &services,
+            LOCKED_ID,
+            adopt_request("Profile: Ravand-nox", BANKED_SOURCE),
+            "hafez-custodian",
+        )
+        .await
+        .expect("first adopt lands");
+        assert_eq!(
+            adopted.id, LOCKED_ID,
+            "the adopt materializes the SPECIFIED uuid"
+        );
+
+        // Second adopt over the SAME uuid refuses loudly (409 class).
+        let err = AssetService::adopt(
+            &services,
+            LOCKED_ID,
+            adopt_request("Profile: Ravand-nox", BANKED_SOURCE),
+            "hafez-custodian",
+        )
+        .await
+        .expect_err("duplicate adopt must refuse");
+        assert!(
+            matches!(err, ApiError::Conflict(_)),
+            "duplicate-barred = loud 409, got {:?}",
+            err
+        );
+
+        // The store holds exactly ONE copy.
+        let asset = AssetService::get(&services, LOCKED_ID)
+            .await
+            .expect("the one copy resolves");
+        assert_eq!(asset.id, LOCKED_ID);
+    }
+
+    /// GUARD 2 — AUDIT-WRITE DENIES: a failed audit write rolls the whole
+    /// adopt back — the asset is ABSENT (the transaction is the
+    /// machine-enforced deny).
+    #[tokio::test]
+    async fn audit_write_failure_denies_the_adopt() {
+        let (assets, _assets2, audit, relations, collections, groups, pool) = setup_repos().await;
+        let services = Services::from_repositories(assets, relations, collections, audit, groups);
+
+        // Sabotage the audit surface: drop the audit_entries table — the
+        // adopt's audit write will fail, and the ruling's deny must roll
+        // the materialization back.
+        sqlx::raw_sql("DROP TABLE audit_entries;")
+            .execute(&pool)
+            .await
+            .expect("audit table dropped");
+
+        let err = AssetService::adopt(
+            &services,
+            LOCKED_ID,
+            adopt_request("Profile: Ravand-nox", BANKED_SOURCE),
+            "hafez-custodian",
+        )
+        .await
+        .expect_err("the adopt must be DENIED when the audit write fails");
+        assert!(
+            !matches!(err, ApiError::Conflict(_)),
+            "the failure is the audit write, not the duplicate bar: {:?}",
+            err
+        );
+
+        // THE ASSET IS ABSENT — the transaction rolled back; no unaudited
+        // materialization exists.
+        let get_err = AssetService::get(&services, LOCKED_ID)
+            .await
+            .expect_err("the adopted asset must NOT exist");
+        assert!(matches!(get_err, ApiError::NotFound(_)));
+    }
+
+    /// HAPPY PATH: the adopt lands + the audit entry (action=adopt,
+    /// provenance in changes) exists — every adopt is audited.
+    #[tokio::test]
+    async fn adopt_lands_and_audits() {
+        let (assets, _assets2, audit, relations, collections, groups, _pool) = setup_repos().await;
+        let services = Services::from_repositories(assets, relations, collections, audit, groups);
+
+        let adopted = AssetService::adopt(
+            &services,
+            LOCKED_ID,
+            adopt_request("Profile: Ravand-nox", BANKED_SOURCE),
+            "hafez-custodian",
+        )
+        .await
+        .expect("adopt lands");
+        assert_eq!(adopted.id, LOCKED_ID);
+        assert_eq!(adopted.title, "Profile: Ravand-nox");
+
+        // The audit entry exists with the provenance.
+        let entries = services
+            .audit()
+            .list(Some("asset"), Some(LOCKED_ID), None, 100, None)
+            .await
+            .expect("audit list")
+            .0;
+        let adopt_entry = entries
+            .iter()
+            .find(|e| e.action == AuditAction::Adopt)
+            .expect("the adopt is audited");
+        assert_eq!(
+            adopt_entry.changes["provenance"],
+            serde_json::json!(BANKED_SOURCE),
+            "the audit entry carries the banked source (provenance required)"
+        );
+        assert_eq!(adopt_entry.user_id, "hafez-custodian");
+    }
+
+    /// PROVENANCE REQUIRED: an adopt without provenance refuses (400
+    /// class) before any store write.
+    #[tokio::test]
+    async fn provenance_required() {
+        let (assets, _assets2, audit, relations, collections, groups, _pool) = setup_repos().await;
+        let services = Services::from_repositories(assets, relations, collections, audit, groups);
+
+        let err = AssetService::adopt(
+            &services,
+            LOCKED_ID,
+            adopt_request("Profile: Ravand-nox", "   "),
+            "hafez-custodian",
+        )
+        .await
+        .expect_err("empty provenance must refuse");
+        assert!(
+            matches!(err, ApiError::Validation(_)),
+            "provenance required = 400 class, got {:?}",
+            err
+        );
+        let _ = std::marker::PhantomData::<CreateAssetRequest>;
     }
 }

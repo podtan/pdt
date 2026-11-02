@@ -11,8 +11,8 @@ pub mod roles;
 mod tag;
 
 pub use asset::{
-    generate_snippet, Asset, CreateAssetRequest, SearchResult, TagSummary, UpdateAssetRequest,
-    UpdateAuthContextRequest,
+    generate_snippet, AdoptAssetRequest, Asset, CreateAssetRequest, SearchResult, TagSummary,
+    UpdateAssetRequest, UpdateAuthContextRequest,
 };
 pub use audit::{AuditAction, AuditEntry};
 pub use auth_context::AuthContext;

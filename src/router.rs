@@ -73,6 +73,13 @@ pub fn build_router(
             "/api/assets/{id}/auth-context",
             put(handlers::assets::update_auth_context),
         )
+        // Adopt route (same-uuid materialization — CPO ruling 6d86ee70,
+        // the Path A adopt's first-class path; platform-admin custody,
+        // duplicate-barred, audited atomically)
+        .route(
+            "/api/assets/{id}/adopt",
+            post(handlers::assets::adopt_asset),
+        )
         // Relation routes
         .route("/api/relations", post(handlers::relations::create_relation))
         .route(

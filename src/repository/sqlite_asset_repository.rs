@@ -793,6 +793,114 @@ impl AssetRepository for SqliteAssetRepository {
 
         self.get_by_id(id).await
     }
+
+    /// ADOPT (CPO ruling 6d86ee70): materialize an asset with a SPECIFIED
+    /// id. Duplicate-barred + audited in ONE transaction — the audit entry
+    /// and the asset land together or not at all (a failed audit write
+    /// DENIES the adopt: unaudited materialization = silent widening).
+    async fn adopt(
+        &self,
+        id: &str,
+        request: CreateAssetRequest,
+        user_id: &str,
+        provenance: &str,
+    ) -> Result<Asset> {
+        // Duplicate bar: refuse if the id exists in ANY form (live or
+        // soft-deleted — the PK is the hard bar; an adopt over a
+        // soft-deleted row would be a resurrection, a different operation).
+        let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM assets WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if exists.is_some() {
+            return Err(ApiError::Conflict(format!(
+                "adopt refused: asset {} already exists in this store (duplicate-barred, ruling 6d86ee70)",
+                id
+            )));
+        }
+
+        let now = Utc::now();
+        let auth_ctx = request
+            .auth_context
+            .or_else(|| Some(AuthContext::default()));
+
+        // ONE transaction: asset + tags + metadata + audit entry.
+        let mut tx = self.pool.begin().await?;
+
+        let insert = sqlx::query(
+            "INSERT INTO assets (id, title, content, created_at, updated_at, created_by, updated_by, deleted_at, visibility, confidentiality, owner_groups)
+             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(&request.title)
+        .bind(&request.content)
+        .bind(now.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .bind(user_id)
+        .bind(user_id)
+        .bind(auth_ctx.as_ref().map(|c| c.visibility.clone()).unwrap_or_default())
+        .bind(auth_ctx.as_ref().map(|c| c.confidentiality.clone()).unwrap_or_default())
+        .bind(auth_ctx.as_ref().map(|c| serde_json::to_string(&c.owner_groups).unwrap_or_default()))
+        .execute(&mut *tx)
+        .await?;
+        if insert.rows_affected() != 1 {
+            return Err(ApiError::Internal(format!(
+                "adopt: asset {} insert affected {} rows (expected 1)",
+                id,
+                insert.rows_affected()
+            )));
+        }
+
+        for tag_req in &request.tags {
+            let tag_id = Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO tags (id, asset_id, category, value, added_by, added_at) VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&tag_id)
+            .bind(id)
+            .bind(&tag_req.category)
+            .bind(&tag_req.value)
+            .bind(user_id)
+            .bind(now.to_rfc3339())
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        for (key, value) in &request.metadata {
+            let value_json = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+            sqlx::query("INSERT INTO asset_metadata (asset_id, key, value_json) VALUES (?, ?, ?)")
+                .bind(id)
+                .bind(key)
+                .bind(&value_json)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        // The audit entry IN the transaction — a failed audit write rolls
+        // the whole adopt back (the ruling's deny, machine-enforced).
+        let changes = serde_json::json!({
+            "title": request.title,
+            "provenance": provenance,
+            "tags": request.tags.len(),
+        });
+        sqlx::query(
+            "INSERT INTO audit_entries (id, entity_type, entity_id, action, changes_json, user_id, timestamp)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind("asset")
+        .bind(id)
+        .bind("adopt")
+        .bind(serde_json::to_string(&changes).unwrap_or_else(|_| "{}".to_string()))
+        .bind(user_id)
+        .bind(now.to_rfc3339())
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        self.get_by_id(id).await
+    }
 }
 
 // --- Row types for sqlx ---

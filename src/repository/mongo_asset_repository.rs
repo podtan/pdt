@@ -9,7 +9,8 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::error::{ApiError, Result};
 use crate::models::{
-    AddTagRequest, Asset, AuthContext, CreateAssetRequest, Tag, UpdateAssetRequest,
+    AddTagRequest, Asset, AuditAction, AuditEntry, AuthContext, CreateAssetRequest, Tag,
+    UpdateAssetRequest,
 };
 use crate::repository::traits::AssetRepository;
 
@@ -59,6 +60,90 @@ impl AssetRepository for MongoAssetRepository {
         };
 
         self.db.assets().insert_one(&asset).await?;
+
+        Ok(asset)
+    }
+
+    /// ADOPT (CPO ruling 6d86ee70): materialize an asset with a SPECIFIED
+    /// id. Duplicate-barred; audited with a compensating rollback — a
+    /// failed audit write DELETES the adopted asset and denies the adopt
+    /// (unaudited materialization = silent widening, fail-loud).
+    async fn adopt(
+        &self,
+        id: &str,
+        request: CreateAssetRequest,
+        user_id: &str,
+        provenance: &str,
+    ) -> Result<Asset> {
+        // Duplicate bar: ANY row with this id (live or soft-deleted).
+        let exists = self.db.assets().find_one(doc! { "_id": id }).await?;
+        if exists.is_some() {
+            return Err(ApiError::Conflict(format!(
+                "adopt refused: asset {} already exists in this store (duplicate-barred, ruling 6d86ee70)",
+                id
+            )));
+        }
+
+        let now = Utc::now();
+        let tags: Vec<Tag> = request
+            .tags
+            .iter()
+            .map(|t| Tag {
+                id: Uuid::new_v4().to_string(),
+                category: t.category.clone(),
+                value: t.value.clone(),
+                added_by: user_id.to_string(),
+                added_at: now,
+            })
+            .collect();
+
+        let asset = Asset {
+            id: id.to_string(),
+            title: request.title.clone(),
+            content: request.content.clone(),
+            tags,
+            metadata: request.metadata.clone(),
+            created_at: now,
+            updated_at: now,
+            created_by: user_id.to_string(),
+            updated_by: user_id.to_string(),
+            deleted_at: None,
+            auth_context: request
+                .auth_context
+                .clone()
+                .or_else(|| Some(AuthContext::default())),
+        };
+
+        self.db.assets().insert_one(&asset).await?;
+
+        // The audit entry — a failure rolls the adopt back (compensating
+        // delete + deny; DocumentDB multi-document transactions are
+        // limited, the compensate is the honest path with a loud error).
+        let entry = AuditEntry {
+            id: Uuid::new_v4().to_string(),
+            entity_type: "asset".to_string(),
+            entity_id: id.to_string(),
+            action: AuditAction::Adopt,
+            changes: serde_json::json!({
+                "title": request.title,
+                "provenance": provenance,
+                "tags": request.tags.len(),
+            }),
+            user_id: user_id.to_string(),
+            timestamp: now,
+        };
+        if let Err(e) = self.db.audit().insert_one(&entry).await {
+            tracing::error!(
+                "ADOPT AUDIT WRITE FAILED for asset {} (rolling the adopt back — an unaudited materialization is a silent widening): {}",
+                id,
+                e
+            );
+            self.db.assets().delete_one(doc! { "_id": id }).await?;
+            return Err(ApiError::Internal(format!(
+                "adopt denied: the audit write failed ({}); the materialization was rolled back",
+                e
+            )));
+        }
 
         Ok(asset)
     }

@@ -59,6 +59,33 @@ pub struct CreateAssetRequest {
     pub auth_context: Option<super::AuthContext>,
 }
 
+/// Request body: ADOPT an asset with a SPECIFIED id (same-uuid
+/// materialization — CPO ruling 6d86ee70, the Path A adopt's first-class
+/// path; replaces the barred direct-sqlite restore).
+///
+/// Additive: plain create keeps minting new uuids — this operation exists
+/// ONLY for restoring a record whose uuid is locked elsewhere (the live
+/// store holds zero copies; the row survives in a banked backup).
+/// Duplicate-barred at the repository layer (refuses loudly if the uuid
+/// exists live or soft-deleted). Provenance is REQUIRED — the call names
+/// the banked source; it lands in the audit entry.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct AdoptAssetRequest {
+    pub title: String,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<super::AddTagRequest>,
+    #[serde(default)]
+    pub metadata: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub auth_context: Option<super::AuthContext>,
+    /// REQUIRED: the banked source the row is materialized from (e.g. the
+    /// frozen pre-dirauth leaf backup / the pre-mutation full-store
+    /// backup). Materialization needs custody + path, not recovery.
+    pub provenance: String,
+}
+
 /// Request to update an existing asset
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct UpdateAssetRequest {

@@ -177,6 +177,50 @@ paths:
           description: Asset deleted successfully
         '404':
           description: Asset not found
+  /api/assets/{id}/adopt:
+    post:
+      tags:
+      - assets
+      summary: 'ADOPT an asset with a SPECIFIED id (same-uuid materialization — CPO
+
+        ruling 6d86ee70, the Path A adopt''s first-class path).'
+      description: 'Custody: PLATFORM-ADMIN only (role=admin) — an adopt is a
+
+        restore-with-custody, not a birth. Duplicate-barred (409 if the uuid
+
+        exists live or soft-deleted). Provenance REQUIRED (400 if absent) —
+
+        the call names the banked source. Audited ATOMICALLY with the
+
+        materialization: a failed audit write denies the adopt.'
+      operationId: adopt_asset
+      parameters:
+      - name: id
+        in: path
+        description: The SPECIFIED uuid to materialize (the locked row's original
+          id)
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdoptAssetRequest'
+        required: true
+      responses:
+        '200':
+          description: Asset adopted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '400':
+          description: Validation error (empty title / missing provenance)
+        '403':
+          description: 'Custody: platform-admin only'
+        '409':
+          description: 'Duplicate-barred: the uuid already exists in this store'
   /api/assets/{id}/auth-context:
     put:
       tags:
@@ -1164,6 +1208,57 @@ components:
           type: string
         value:
           type: string
+    AdoptAssetRequest:
+      type: object
+      description: 'Request body: ADOPT an asset with a SPECIFIED id (same-uuid
+
+        materialization — CPO ruling 6d86ee70, the Path A adopt''s first-class
+
+        path; replaces the barred direct-sqlite restore).
+
+
+        Additive: plain create keeps minting new uuids — this operation exists
+
+        ONLY for restoring a record whose uuid is locked elsewhere (the live
+
+        store holds zero copies; the row survives in a banked backup).
+
+        Duplicate-barred at the repository layer (refuses loudly if the uuid
+
+        exists live or soft-deleted). Provenance is REQUIRED — the call names
+
+        the banked source; it lands in the audit entry.'
+      required:
+      - title
+      - provenance
+      properties:
+        auth_context:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/AuthContext'
+        content:
+          type:
+          - string
+          - 'null'
+        metadata:
+          type: object
+          additionalProperties: {}
+          propertyNames:
+            type: string
+        provenance:
+          type: string
+          description: 'REQUIRED: the banked source the row is materialized from (e.g.
+            the
+
+            frozen pre-dirauth leaf backup / the pre-mutation full-store
+
+            backup). Materialization needs custody + path, not recovery.'
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/AddTagRequest'
+        title:
+          type: string
     Asset:
       type: object
       description: Knowledge asset document
@@ -1231,6 +1326,7 @@ components:
       - add_member
       - remove_member
       - admin_bypass
+      - adopt
     AuditEntry:
       type: object
       description: Audit log entry

@@ -5,6 +5,40 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.26] — 2026-11-02
+
+### Added — ADOPT-BY-ID: same-uuid materialization (CPO ruling 6d86ee70; the Path A adopt's first-class path)
+
+- `POST /api/assets/{id}/adopt` — materialize an asset with a SPECIFIED
+  uuid. The Path A adopt (lock f70646ee, specimen 78398674 "Profile:
+  Ravand-nox") was blocked: a plain create mints a NEW uuid (the duplicate
+  the lock forbids) and direct-sqlite restore is barred by the standing
+  no-direct-sqlite law — this operation is the first-class path that
+  replaces it.
+- SHAPE (the ruling's conditions, machine-enforced):
+  - **additive**: no change to create/birth semantics; plain create keeps
+    minting new uuids
+  - **duplicate-barred**: refuses loudly (409) if the uuid exists live OR
+    soft-deleted (the PK is the hard bar — an adopt over a soft-deleted
+    row would be a resurrection, a different operation)
+  - **custody**: platform-admin only (role=admin); the handler checks
+  - **audited ATOMICALLY**: the audit entry (action=adopt, provenance in
+    changes) and the asset land in ONE sqlite transaction — a failed
+    audit write DENIES the adopt (unaudited materialization = silent
+    widening, fail-loud); the mongo backend compensates (delete + deny,
+    loud error)
+  - **provenance REQUIRED** (400 if absent): the call names the banked
+    source; it lands in the audit entry
+- GUARDS (release checklist v3, standalone verbatim — 4 new tests in
+  `adopt_guards`): duplicate-refusal (one copy stays) · audit-write-denies
+  (the audit table dropped → the adopt is denied AND the asset is absent —
+  the transaction rolled back) · happy path (the adopt lands + the audit
+  entry carries the provenance) · provenance-required.
+- Timestamps: the adopt materializes with NOW timestamps (it is a NEW
+  materialization event, not a byte-copy of the backup row); the audit
+  entry records the provenance. The custody holder (Hafez) executes the
+  locked Path A adopt.
+
 ## [0.3.25] — 2026-11-02
 
 ### Added — PDT-native per-instance groups + cedar merge (workstream 69b4bb4c, tasks a9f91cfb + 147a17fc; owner directive 2026-11-02 relayed by Farzan)

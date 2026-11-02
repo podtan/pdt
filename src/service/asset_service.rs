@@ -5,8 +5,8 @@ use serde_json::json;
 
 use crate::error::{ApiError, Result};
 use crate::models::{
-    AddTagRequest, Asset, AuditAction, AuthContext, CreateAssetRequest, Tag, UpdateAssetRequest,
-    UpdateAuthContextRequest,
+    AddTagRequest, AdoptAssetRequest, Asset, AuditAction, AuthContext, CreateAssetRequest, Tag,
+    UpdateAssetRequest, UpdateAuthContextRequest,
 };
 use crate::service::Services;
 
@@ -116,6 +116,45 @@ impl AssetService {
     }
 
     /// Get asset by ID
+    /// ADOPT: materialize an asset with a SPECIFIED id (same-uuid adopt —
+    /// CPO ruling 6d86ee70, the Path A adopt's first-class path).
+    ///
+    /// Additive (plain create keeps minting new uuids); duplicate-barred at
+    /// the repository layer; audited ATOMICALLY with the materialization (a
+    /// failed audit write denies the adopt). Provenance is REQUIRED — the
+    /// call names the banked source. Custody (platform-admin only) is the
+    /// HANDLER's check (it holds the claims).
+    pub async fn adopt(
+        services: &Services,
+        id: &str,
+        request: AdoptAssetRequest,
+        user_id: &str,
+    ) -> Result<Asset> {
+        if request.title.trim().is_empty() {
+            return Err(ApiError::Validation("Title cannot be empty".to_string()));
+        }
+        // Provenance REQUIRED (ruling 6d86ee70): the call names the banked
+        // source — an adopt without provenance is an unaccountable
+        // materialization.
+        if request.provenance.trim().is_empty() {
+            return Err(ApiError::Validation(
+                "provenance is required: name the banked source the row is materialized from"
+                    .to_string(),
+            ));
+        }
+        let inner = CreateAssetRequest {
+            title: request.title,
+            content: request.content,
+            tags: request.tags,
+            metadata: request.metadata,
+            auth_context: request.auth_context,
+        };
+        services
+            .assets()
+            .adopt(id, inner, user_id, &request.provenance)
+            .await
+    }
+
     pub async fn get(services: &Services, id: &str) -> Result<Asset> {
         services.assets().get_by_id(id).await
     }
