@@ -639,6 +639,30 @@ pub async fn check_membership_permission(
     Ok(())
 }
 
+/// Per-request filter summary (issue 51645197): a filtered list must leave
+/// a server-side trace — a silent drop is indistinguishable from an empty
+/// store (the 40ccddef mehrdad/Eynak diagnosis class: the server saw
+/// nothing while the filter dropped every list call). WARN only when drops
+/// occurred; zero-drop lists stay quiet (less is more).
+fn log_filter_summary(
+    action: &str,
+    sub: &str,
+    instance_id: Option<&str>,
+    total: usize,
+    kept: usize,
+) {
+    if kept < total {
+        tracing::warn!(
+            "Cedar list filter: kept {} of {} assets for user {} on instance {} (action {})",
+            kept,
+            total,
+            sub,
+            instance_id.unwrap_or("-"),
+            action
+        );
+    }
+}
+
 /// Evaluate Cedar authorization for a list of assets, filtering out denied ones.
 ///
 /// Returns only the assets that the given user is allowed to perform the action on.
@@ -659,7 +683,17 @@ pub fn filter_by_permission(
                 return true; // Grandfathered — always include
             }
             match evaluate_permission(authorizer, claims, pdt_groups, action, asset) {
-                Ok(allowed) => allowed,
+                Ok(allowed) => {
+                    if !allowed {
+                        tracing::debug!(
+                            "Cedar filtered asset {} for user {} on action {}: denied",
+                            asset.id,
+                            claims.sub,
+                            action
+                        );
+                    }
+                    allowed
+                }
                 Err(e) => {
                     tracing::warn!(
                         "Cedar evaluation error for asset {}: {}, denying access",
@@ -697,13 +731,16 @@ pub async fn filter_by_permission_resolved(
         .await?;
         return Ok(assets);
     }
-    Ok(filter_by_permission(
+    let total = assets.len();
+    let kept = filter_by_permission(
         authorizer,
         claims,
         &resolved.effective_groups,
         action,
         assets,
-    ))
+    );
+    log_filter_summary(action, &claims.sub, instance_id, total, kept.len());
+    Ok(kept)
 }
 
 /// Band key: the full Cedar-entity input tuple for one asset.
@@ -797,10 +834,19 @@ pub fn filter_by_permission_batched(
             if !should_enforce_cedar(asset) {
                 return true; // Grandfathered — always include
             }
-            verdicts
+            let allowed = verdicts
                 .get(&cedar_band_key(asset))
                 .copied()
-                .unwrap_or(false)
+                .unwrap_or(false);
+            if !allowed {
+                tracing::debug!(
+                    "Cedar filtered asset {} for user {} on action {}: denied (band verdict)",
+                    asset.id,
+                    claims.sub,
+                    action
+                );
+            }
+            allowed
         })
         .collect()
 }
@@ -829,13 +875,16 @@ pub async fn filter_by_permission_batched_resolved(
         .await?;
         return Ok(assets);
     }
-    Ok(filter_by_permission_batched(
+    let total = assets.len();
+    let kept = filter_by_permission_batched(
         authorizer,
         claims,
         &resolved.effective_groups,
         action,
         assets,
-    ))
+    );
+    log_filter_summary(action, &claims.sub, instance_id, total, kept.len());
+    Ok(kept)
 }
 
 #[cfg(test)]
@@ -2127,5 +2176,183 @@ mod native_groups_merge_tests {
             .await
             .expect("check");
         assert!(!is_plain, "a non-member does not manage groups");
+    }
+}
+
+#[cfg(test)]
+mod filter_logging_tests {
+    //! Filter-trace regression tests (issue 51645197, 2026-11-02): a
+    //! filtered list must leave a server-side trace — the silent-drop class
+    //! (`Ok(false)` → filtered, no log; only evaluation ERRORS logged) made
+    //! the mehrdad/Eynak diagnosis (40ccddef) blind: the server saw nothing
+    //! while the filter dropped every list call, so an empty list was
+    //! indistinguishable from an empty store. Pins: (a) the per-asset drop
+    //! logs at debug naming asset + user; (b) the per-request summary warns
+    //! ONLY when drops occurred (zero-drop lists stay quiet).
+
+    use super::*;
+    use crate::models::{AuthContext, Tag};
+    use pep::cedar::CedarConfig;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedBuf {
+        fn new() -> (Self, Arc<Mutex<Vec<u8>>>) {
+            let arc = Arc::new(Mutex::new(Vec::new()));
+            (SharedBuf(arc.clone()), arc)
+        }
+    }
+
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("log buffer lock")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture_logs() -> (tracing::subscriber::DefaultGuard, Arc<Mutex<Vec<u8>>>) {
+        let (writer, buffer) = SharedBuf::new();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+        (tracing::subscriber::set_default(subscriber), buffer)
+    }
+
+    fn test_authorizer() -> CedarAuthorizer {
+        let config = CedarConfig {
+            policy_path: PathBuf::from("/nonexistent/policies.cedar"),
+            schema_path: None,
+            entities_path: None,
+            default_decision: Default::default(),
+            validate_on_load: true,
+            policy_store_url: None,
+            policy_store_token: None,
+            embedded_policy: Some(include_str!("../../policies/rbac.cedar")),
+            embedded_schema: Some(include_str!("../../policies/schema.cedarschema")),
+        };
+        CedarAuthorizer::new(config).expect("embedded policy loads")
+    }
+
+    fn claims_no_groups(sub: &str) -> JwtClaims {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "role".to_string(),
+            serde_json::Value::String("user".to_string()),
+        );
+        JwtClaims {
+            sub: sub.to_string(),
+            iss: "test-issuer".to_string(),
+            aud: None,
+            exp: 9999999999,
+            iat: None,
+            email: Some(format!("{}@example.com", sub)),
+            name: None,
+            preferred_username: None,
+            extra,
+        }
+    }
+
+    fn team_asset_denied(id: &str) -> Asset {
+        Asset {
+            id: id.to_string(),
+            title: format!("Asset {}", id),
+            content: None,
+            tags: vec![Tag {
+                id: uuid::Uuid::new_v4().to_string(),
+                category: "status".to_string(),
+                value: "draft".to_string(),
+                added_by: "test".to_string(),
+                added_at: chrono::Utc::now(),
+            }],
+            metadata: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            created_by: "bob".to_string(),
+            updated_by: "bob".to_string(),
+            deleted_at: None,
+            auth_context: Some(AuthContext {
+                visibility: "team".to_string(),
+                owner_groups: vec!["carol".to_string()],
+                confidentiality: String::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn filtered_drops_leave_a_server_side_trace() {
+        let (_guard, buffer) = capture_logs();
+        let authorizer = test_authorizer();
+        let claims = claims_no_groups("viewer-sub");
+        let kept = filter_by_permission(
+            &authorizer,
+            &claims,
+            &[],
+            "View",
+            vec![team_asset_denied("dropped-1")],
+        );
+        assert!(kept.is_empty(), "the denied asset is filtered");
+        let log = String::from_utf8(buffer.lock().expect("log buffer lock").clone())
+            .expect("log is utf8");
+        assert!(
+            log.contains("Cedar filtered asset dropped-1 for user viewer-sub"),
+            "the per-asset drop must be logged with the asset id + user; got: {}",
+            log
+        );
+    }
+
+    #[test]
+    fn batched_filtered_drops_leave_a_server_side_trace() {
+        let (_guard, buffer) = capture_logs();
+        let authorizer = test_authorizer();
+        let claims = claims_no_groups("viewer-sub");
+        let kept = filter_by_permission_batched(
+            &authorizer,
+            &claims,
+            &[],
+            "View",
+            vec![
+                team_asset_denied("dropped-b-1"),
+                team_asset_denied("dropped-b-2"),
+            ],
+        );
+        assert_eq!(kept.len(), 0, "both denied assets are filtered");
+        let log = String::from_utf8(buffer.lock().expect("log buffer lock").clone())
+            .expect("log is utf8");
+        assert!(
+            log.contains("Cedar filtered asset dropped-b-1 for user viewer-sub")
+                && log.contains("Cedar filtered asset dropped-b-2 for user viewer-sub"),
+            "the batched per-asset drops must be logged; got: {}",
+            log
+        );
+    }
+
+    #[test]
+    fn filter_summary_warns_only_on_drops() {
+        let (_guard, buffer) = capture_logs();
+        log_filter_summary("View", "viewer-sub", Some("inst-1"), 5, 0);
+        log_filter_summary("View", "admin-sub", Some("inst-1"), 5, 5);
+        let log = String::from_utf8(buffer.lock().expect("log buffer lock").clone())
+            .expect("log is utf8");
+        assert!(
+            log.contains("kept 0 of 5 assets for user viewer-sub on instance inst-1"),
+            "the summary must warn with counts + user + instance; got: {}",
+            log
+        );
+        assert!(
+            !log.contains("kept 5 of 5"),
+            "a zero-drop filter must NOT emit the summary; got: {}",
+            log
+        );
     }
 }

@@ -5,6 +5,25 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.27] — 2026-11-02
+
+### Added — Cedar list-filter trace (issue 51645197; the fail-silent class on the LIST path)
+
+- `filter_by_permission` / `filter_by_permission_batched` now LOG the
+  per-asset drop (`Cedar filtered asset {id} for user {sub} on action
+  {action}: denied`, debug level) — previously `Ok(false)` filtered with
+  no log and only evaluation ERRORS logged, so a filtered list was
+  indistinguishable from an empty store (the 40ccddef mehrdad/Eynak
+  diagnosis took hours because the server saw nothing).
+- Per-request summary (`Cedar list filter: kept X of Y assets for user
+  {sub} on instance {id} (action {action})`, warn level) emitted by the
+  resolved wrappers ONLY when drops occurred — zero-drop lists stay
+  quiet. The GET path (`check_permission`) already logged denies; the
+  list-path asymmetry is closed.
+- Regression tests (`filter_logging_tests`): the drop leaves a trace
+  naming asset + user (per-row + batched), and the summary warns only on
+  drops.
+
 ## [0.3.26] — 2026-11-02
 
 ### Added — ADOPT-BY-ID: same-uuid materialization (CPO ruling 6d86ee70; the Path A adopt's first-class path)
