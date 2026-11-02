@@ -127,6 +127,17 @@ async fn main() -> anyhow::Result<()> {
     pdt::service::group_service::GroupService::ensure_instance_admins_group(&services)
         .await
         .context("Failed to ensure the instance-admins group")?;
+    // The DESIGNED seed mechanism (CPO ruling on defect c0c606c6, option
+    // (b)): bootstrap principals (PDT_SEED_INSTANCE_ADMINS) land in the
+    // global store's instance-admins at boot — audited, idempotent,
+    // per-sub non-fatal.
+    pdt::service::group_service::GroupService::seed_instance_admins(
+        &services,
+        &config.seed_instance_admins,
+        "system",
+    )
+    .await
+    .context("Failed to seed instance-admins bootstrap principals")?;
 
     // Initialize Cedar authorization (optional — gracefully disabled when CEDAR_ENABLED=false)
     let authorizer = if config.cedar.enabled {
@@ -152,7 +163,11 @@ async fn main() -> anyhow::Result<()> {
     // Initialize multi-tenant pool manager
     let instances_dir =
         std::env::var("PDT_INSTANCES_DIR").unwrap_or_else(|_| "/data/instances".to_string());
-    let tenant_manager = TenantPoolManager::new(services, PathBuf::from(&instances_dir));
+    let tenant_manager = TenantPoolManager::new(
+        services,
+        PathBuf::from(&instances_dir),
+        config.seed_instance_admins.clone(),
+    );
     tracing::info!(
         "Multi-tenant routing enabled (instances dir: {})",
         instances_dir

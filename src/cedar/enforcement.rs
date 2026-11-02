@@ -1805,7 +1805,7 @@ mod native_groups_merge_tests {
     //! harmless the moment the PDT-native groups carry real memberships.
 
     use super::*;
-    use crate::models::AuthContext;
+    use crate::models::{AuditAction, AuthContext};
     use crate::repository::{
         SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
         SqliteGroupRepository, SqliteRelationRepository,
@@ -2176,6 +2176,142 @@ mod native_groups_merge_tests {
             .await
             .expect("check");
         assert!(!is_plain, "a non-member does not manage groups");
+    }
+
+    /// THE SEED MECHANISM (CPO ruling on defect c0c606c6, option (b)):
+    /// bootstrap principals land in instance-admins, audited with the
+    /// seed marker, and the seeded member's admin bypass RESOLVES at
+    /// read time (the seed heals the manage gate — the prod gap that
+    /// blocked the tocpi propagate-admins backfill).
+    #[tokio::test]
+    async fn seed_lands_audits_and_heals_the_bypass() {
+        let services = test_services().await;
+
+        GroupService::seed_instance_admins(
+            &services,
+            &["owner-sub".to_string(), "cpo-sub".to_string()],
+            "system",
+        )
+        .await
+        .expect("seed");
+
+        assert!(
+            services
+                .groups()
+                .is_instance_admin("owner-sub")
+                .await
+                .expect("check"),
+            "seeded sub is an instance-admin"
+        );
+        assert!(
+            services
+                .groups()
+                .is_instance_admin("cpo-sub")
+                .await
+                .expect("check"),
+            "second seeded sub is an instance-admin"
+        );
+
+        // Audited: the seed entries carry the marker + the actor.
+        let (entries, _) = services
+            .audit()
+            .list(Some("group"), None, Some("system"), 100, None)
+            .await
+            .expect("audit list");
+        let seed_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                e.action == AuditAction::AddMember
+                    && e.changes.get("seed").and_then(|s| s.as_bool()) == Some(true)
+            })
+            .collect();
+        assert_eq!(
+            seed_entries.len(),
+            2,
+            "one audited seed entry per landing, actor=system"
+        );
+
+        // The heal: the seeded member's admin bypass resolves at read
+        // time from the group_members tables (no token claim needed).
+        let claims = claims_no_groups("owner-sub");
+        let resolved = resolve_instance_authz(&services, &claims).await;
+        assert!(
+            resolved.admin_bypass,
+            "the seed heals the manage gate: bypass resolves from the seeded membership"
+        );
+    }
+
+    /// The seed is IDEMPOTENT: a re-boot (second call) adds no duplicate
+    /// membership rows and no duplicate audit entries.
+    #[tokio::test]
+    async fn seed_is_idempotent() {
+        let services = test_services().await;
+        let subs = vec!["owner-sub".to_string(), "cpo-sub".to_string()];
+
+        GroupService::seed_instance_admins(&services, &subs, "system")
+            .await
+            .expect("first seed");
+        GroupService::seed_instance_admins(&services, &subs, "system")
+            .await
+            .expect("second seed (re-boot)");
+
+        let admins = services
+            .groups()
+            .get_group_by_name(INSTANCE_ADMINS_GROUP)
+            .await
+            .expect("resolve")
+            .expect("seeded");
+        let members = services
+            .groups()
+            .list_members(&admins.id)
+            .await
+            .expect("members");
+        assert_eq!(members.len(), 2, "no duplicate membership rows");
+
+        let (entries, _) = services
+            .audit()
+            .list(Some("group"), None, Some("system"), 100, None)
+            .await
+            .expect("audit list");
+        let seed_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                e.action == AuditAction::AddMember
+                    && e.changes.get("seed").and_then(|s| s.as_bool()) == Some(true)
+            })
+            .collect();
+        assert_eq!(
+            seed_entries.len(),
+            2,
+            "no duplicate audit entries on re-seed"
+        );
+    }
+
+    /// An empty seed list is a no-op (no env, no seed, zero behavior
+    /// change) and a whitespace-only sub is skipped.
+    #[tokio::test]
+    async fn seed_empty_and_whitespace_noop() {
+        let services = test_services().await;
+
+        GroupService::seed_instance_admins(&services, &[], "system")
+            .await
+            .expect("empty list no-op");
+        GroupService::seed_instance_admins(&services, &["   ".to_string()], "system")
+            .await
+            .expect("whitespace-only skipped");
+
+        let admins = services
+            .groups()
+            .get_group_by_name(INSTANCE_ADMINS_GROUP)
+            .await
+            .expect("resolve")
+            .expect("seeded");
+        let members = services
+            .groups()
+            .list_members(&admins.id)
+            .await
+            .expect("members");
+        assert!(members.is_empty(), "nothing seeded");
     }
 }
 

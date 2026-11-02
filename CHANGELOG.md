@@ -5,6 +5,50 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.28] — 2026-11-02
+
+### Added — the DESIGNED seed mechanism for instance-admins (CPO ruling on defect c0c606c6, option (b))
+
+- `PDT_SEED_INSTANCE_ADMINS` (comma-separated token subs): bootstrap
+  principals are seeded into EVERY opened store's instance-admins group
+  at store open — the global store at boot (main.rs) and every
+  workspace/child leaf at pool open (tenant.rs). An empty admin group at
+  boot is born-invisible governance (the grey-icons class); prod was
+  never seeded while the IT env was (the IT/prod parity gap that left
+  the tocpi propagate-admins backfill — work order ed35e52a — blocked
+  with all leaf writes 403 at the groups surface).
+- Idempotent: an already-member sub is SKIPPED (no duplicate membership
+  row, no duplicate audit entry on re-boot). Audited: each landing
+  writes ONE audit entry (action=AddMember, `seed: true`, actor
+  `system`) via the same audited path as every other group mutation.
+- Per-sub failures are WARN-loud and NON-FATAL — the store still opens
+  (zero downtime); residue stays visible in the journal and via the
+  tocpi admin-drift detector.
+- Backend-agnostic: rides the GroupService/repository trait layer (sqlite
+  and mongo today, postgres later).
+- Converges with task 33b6d070 (the Phase 2b migration): one designed
+  boot-time seeding mechanism family serves both the bootstrap-principal
+  seed and the groups-table migration (coordination per the ruling).
+
+### Fixed — lying policy comments (same ruling pass)
+
+- `policies/rbac.cedar` header comments referenced the retired IdP
+  hostname (`idm.tanbal.ir`) and a `pdt_admins` group that no longer
+  exists — comments that lie are fail-silent documentation. Corrected to
+  the pdt-api claim-map transport (`role:pdt-api-admins@<idp-host>` →
+  `admin`) with the host left to deploy config.
+
+### Regression pins (3, standalone)
+
+- `seed_lands_audits_and_heals_the_bypass` — the seeded subs are
+  instance-admins, the audit entries carry the seed marker + actor, and
+  the seeded member's admin bypass resolves at read time (the prod-gap
+  acceptance shape).
+- `seed_is_idempotent` — re-seed adds no duplicate membership rows and
+  no duplicate audit entries.
+- `seed_empty_and_whitespace_noop` — empty list / whitespace-only subs
+  seed nothing.
+
 ## [0.3.27] — 2026-11-02
 
 ### Added — Cedar list-filter trace (issue 51645197; the fail-silent class on the LIST path)

@@ -120,6 +120,13 @@ pub struct Config {
     pub sqlite_path: String,
     pub auth: AuthConfig,
     pub cedar: CedarConfig,
+    /// Bootstrap principals (token subs) seeded into EVERY store's
+    /// instance-admins group at store open (CPO ruling on defect
+    /// c0c606c6, 2026-11-02: option (b) — the DESIGNED seed mechanism;
+    /// an empty admin group at boot is born-invisible governance).
+    /// Parsed from PDT_SEED_INSTANCE_ADMINS (comma-separated). Empty by
+    /// default — no env, no seed, zero behavior change.
+    pub seed_instance_admins: Vec<String>,
 }
 
 impl Config {
@@ -180,6 +187,13 @@ impl Config {
                 ),
             },
             cedar,
+            seed_instance_admins: env::var("PDT_SEED_INSTANCE_ADMINS")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect(),
         })
     }
 }

@@ -71,8 +71,11 @@ fn auth_config(enabled: bool, dev_mode: bool) -> AuthConfig {
 
 async fn router_with(enabled: bool, dev_mode: bool) -> axum::Router {
     let services = sqlite_services().await;
-    let tenant_manager =
-        TenantPoolManager::new(services, PathBuf::from("/tmp/pdt-gate-test-instances"));
+    let tenant_manager = TenantPoolManager::new(
+        services,
+        PathBuf::from("/tmp/pdt-gate-test-instances"),
+        Vec::new(),
+    );
     let auth_layer = AuthLayer::new(auth_config(enabled, dev_mode), ResourceServerClient::new());
     build_router(tenant_manager, auth_layer, None)
 }
@@ -162,7 +165,7 @@ async fn unknown_instance_id_404s_naming_the_id_zero_disk_writes() {
     std::fs::create_dir_all(&dir).unwrap();
 
     let services = sqlite_services().await;
-    let tenant_manager = TenantPoolManager::new(services, dir.clone());
+    let tenant_manager = TenantPoolManager::new(services, dir.clone(), Vec::new());
     let auth_layer = AuthLayer::new(auth_config(false, true), ResourceServerClient::new());
     let app = build_router(tenant_manager, auth_layer, None);
 
@@ -211,7 +214,7 @@ async fn malformed_instance_id_400s_not_500() {
     std::fs::create_dir_all(&dir).unwrap();
 
     let services = sqlite_services().await;
-    let tenant_manager = TenantPoolManager::new(services, dir.clone());
+    let tenant_manager = TenantPoolManager::new(services, dir.clone(), Vec::new());
     let auth_layer = AuthLayer::new(auth_config(false, true), ResourceServerClient::new());
     let app = build_router(tenant_manager, auth_layer, None);
 

@@ -129,15 +129,24 @@ pub struct TenantPoolManager {
     instances: Arc<RwLock<HashMap<String, Services>>>,
     /// Base directory for instance databases (e.g. `/data/instances`).
     instances_dir: PathBuf,
+    /// Bootstrap principals (token subs) seeded into every opened
+    /// store's instance-admins group (CPO ruling on defect c0c606c6,
+    /// option (b) — the DESIGNED seed mechanism). Empty = no seed.
+    seed_instance_admins: Vec<String>,
 }
 
 impl TenantPoolManager {
     /// Create a new manager with the given global services and instances directory.
-    pub fn new(global_services: Services, instances_dir: PathBuf) -> Self {
+    pub fn new(
+        global_services: Services,
+        instances_dir: PathBuf,
+        seed_instance_admins: Vec<String>,
+    ) -> Self {
         Self {
             global_services,
             instances: Arc::new(RwLock::new(HashMap::new())),
             instances_dir,
+            seed_instance_admins,
         }
     }
 
@@ -295,6 +304,14 @@ impl TenantPoolManager {
         GroupService::ensure_instance_admins_group(&services)
             .await
             .context("Failed to ensure the instance-admins group")?;
+        // The DESIGNED seed mechanism (CPO ruling on defect c0c606c6,
+        // option (b)): bootstrap principals land in this store's
+        // instance-admins at open — audited, idempotent, per-sub
+        // non-fatal. An empty admin group at boot is born-invisible
+        // governance.
+        GroupService::seed_instance_admins(&services, &self.seed_instance_admins, "system")
+            .await
+            .context("Failed to seed instance-admins bootstrap principals")?;
 
         Ok(services)
     }
@@ -553,7 +570,7 @@ mod tests {
                 SqliteAuditRepository::new(pool.clone()),
                 SqliteGroupRepository::new(pool),
             );
-            TenantPoolManager::new(services, dir)
+            TenantPoolManager::new(services, dir, Vec::new())
         }
 
         #[tokio::test]

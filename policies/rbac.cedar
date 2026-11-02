@@ -4,9 +4,10 @@
 // They work alongside the entity schema defined in schema.cedarschema.
 
 // Service-to-service: NGHR service account (nghr_svc) has full write access.
-// nghr_svc@idm.tanbal.ir UUID: 0b40e1ae-8c3b-473c-bf90-1a30027c4e41
-// Members of pdt_admins group (which nghr_svc is a member of) get admin role
-// via the pdt-api claim map, so the admin role policies below already cover it.
+// nghr_svc UUID: 0b40e1ae-8c3b-473c-bf90-1a30027c4e41 (IdP host is deploy
+// config — never hardcoded here). Admin role arrives via the pdt-api claim
+// map (role:pdt-api-admins@<idp-host> -> "admin") for members of the
+// pdt-api-admins group, so the admin role policies below already cover it.
 // This explicit policy ensures forward-compatibility for any service-level checks.
 permit(
     principal,

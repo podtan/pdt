@@ -35,6 +35,83 @@ impl GroupService {
         Ok(())
     }
 
+    /// Seed bootstrap principals (token subs) into the instance-admins
+    /// group — the DESIGNED seed mechanism (CPO ruling on defect c0c606c6,
+    /// 2026-11-02, option (b)): an empty admin group at boot is
+    /// born-invisible governance (the grey-icons class), and prod was
+    /// never seeded while the IT env was (the IT/prod parity gap that
+    /// blocked the tocpi propagate-admins backfill).
+    ///
+    /// Idempotent: an already-member sub is SKIPPED (no duplicate row, no
+    /// duplicate audit entry on re-boot). Audited: each landing rides the
+    /// SAME `add_member` path as every other mutation (one code path).
+    /// Per-sub failures are WARN-loud and NON-FATAL — the store still
+    /// opens (zero downtime); residue stays visible via the journal and
+    /// the tocpi admin-drift detector. The subs come from
+    /// `PDT_SEED_INSTANCE_ADMINS` (comma-separated) at the call sites;
+    /// this core takes them explicitly so tests need no env mutation.
+    pub async fn seed_instance_admins(
+        services: &Services,
+        subs: &[String],
+        actor: &str,
+    ) -> Result<()> {
+        if subs.is_empty() {
+            return Ok(());
+        }
+        let group = services
+            .groups()
+            .get_group_by_name(INSTANCE_ADMINS_GROUP)
+            .await?
+            .ok_or_else(|| {
+                ApiError::Internal(
+                    "instance-admins group missing at seed time (bootstrap order broken)"
+                        .to_string(),
+                )
+            })?;
+        let existing: Vec<String> = services
+            .groups()
+            .list_members(&group.id)
+            .await?
+            .into_iter()
+            .map(|m| m.member_id)
+            .collect();
+        for sub in subs {
+            let sub = sub.trim();
+            if sub.is_empty() {
+                continue;
+            }
+            if existing.iter().any(|m| m == sub) {
+                tracing::debug!("Seed: {sub} already in instance-admins — skipped");
+                continue;
+            }
+            match services.groups().add_member(&group.id, sub, actor).await {
+                Ok(_) => {
+                    let _ = services
+                        .audit()
+                        .create(
+                            "group",
+                            &group.id,
+                            crate::models::AuditAction::AddMember,
+                            serde_json::json!({
+                                "member_id": sub,
+                                "seed": true,
+                            }),
+                            actor,
+                        )
+                        .await;
+                    tracing::info!("Seed: {sub} added to instance-admins (bootstrap seed)");
+                }
+                Err(e) => {
+                    // WARN-loud, non-fatal: the store still opens; the
+                    // residue is visible in the journal and via the
+                    // tocpi admin-drift detector.
+                    tracing::warn!("Seed: FAILED to add {sub} to instance-admins (non-fatal): {e}");
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Create a group (audited).
     pub async fn create(
         services: &Services,
