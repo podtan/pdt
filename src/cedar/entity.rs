@@ -86,6 +86,25 @@ pub fn build_asset_resource_uid(asset: &Asset) -> Result<EntityUid, pep::cedar::
 /// Extends PEP's `build_principal_entity` with `role` and `groups` from extra claims
 /// (matching the PDT schema's `User` entity).
 pub fn user_to_cedar_principal(claims: &JwtClaims) -> Entity {
+    user_to_cedar_principal_with_groups(claims, &[])
+}
+
+/// Build a Cedar principal `Entity` with MERGED effective groups
+/// (workstream 69b4bb4c, task 147a17fc — Phase 1b).
+///
+/// `pdt_groups` are the PDT-native group NAMES resolved at read time from
+/// the instance's group_members tables (by principal id). The `groups`
+/// attribute carries the UNION: pep-fetched Kanidm groups ∪ PDT-native
+/// groups — union semantics (a failure in either source degrades to the
+/// other, never to zero) are the CALLER's responsibility
+/// (`resolve_instance_authz`); this builder merges what it is given.
+///
+/// Band matching resolves MEMBERSHIP, not string forms: bands store group
+/// names (canonical), and the principal's effective groups carry the names
+/// it verifiably belongs to — the SPN-vs-UUID band-form mismatch class dies
+/// here (the band references the group name; the principal's membership
+/// resolves from the group_members tables, not from a token-claim string).
+pub fn user_to_cedar_principal_with_groups(claims: &JwtClaims, pdt_groups: &[String]) -> Entity {
     // Start with PEP's base entity builder (email, name, username, roles)
     let base_entity = match build_principal_entity(claims) {
         Ok(e) => e,
@@ -127,24 +146,32 @@ pub fn user_to_cedar_principal(claims: &JwtClaims) -> Entity {
         }
     }
 
-    // Add PDT-specific: groups (set from extra claims)
+    // Add PDT-specific: groups — the UNION of the token's groups claim and
+    // the PDT-native memberships resolved at read time (147a17fc). Dedup +
+    // sort for deterministic entity bytes (the batched filter keys on
+    // entity inputs).
+    let mut merged: Vec<String> = Vec::new();
     if let Some(serde_json::Value::Array(groups)) = claims.extra.get("groups") {
-        let set_exprs: Vec<RestrictedExpression> = groups
-            .iter()
-            .filter_map(|g| {
-                if let serde_json::Value::String(s) = g {
-                    Some(RestrictedExpression::new_string(s.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !set_exprs.is_empty() {
-            attrs.insert(
-                "groups".to_string(),
-                RestrictedExpression::new_set(set_exprs),
-            );
+        for g in groups {
+            if let serde_json::Value::String(s) = g {
+                merged.push(s.clone());
+            }
         }
+    }
+    for g in pdt_groups {
+        merged.push(g.clone());
+    }
+    merged.sort();
+    merged.dedup();
+    if !merged.is_empty() {
+        let set_exprs: Vec<RestrictedExpression> = merged
+            .into_iter()
+            .map(RestrictedExpression::new_string)
+            .collect();
+        attrs.insert(
+            "groups".to_string(),
+            RestrictedExpression::new_set(set_exprs),
+        );
     }
 
     // Sub/SPN-keyed matching (CPO ruling eda88e15, 2026-10-23): the team

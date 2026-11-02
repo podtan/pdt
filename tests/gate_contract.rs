@@ -20,7 +20,7 @@ use pdt::auth::config::AuthConfig;
 use pdt::auth::middleware::AuthLayer;
 use pdt::repository::{
     SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
-    SqliteRelationRepository,
+    SqliteGroupRepository, SqliteRelationRepository,
 };
 use pdt::router::build_router;
 use pdt::service::Services;
@@ -50,7 +50,8 @@ async fn sqlite_services() -> Services {
         SqliteAssetRepository::new(pool.clone()),
         SqliteRelationRepository::new(pool.clone()),
         SqliteCollectionRepository::new(pool.clone()),
-        SqliteAuditRepository::new(pool),
+        SqliteAuditRepository::new(pool.clone()),
+        SqliteGroupRepository::new(pool),
     )
 }
 

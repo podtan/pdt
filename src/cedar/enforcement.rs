@@ -21,8 +21,7 @@ use pep::oidc::types::JwtClaims;
 use crate::auth::AuthenticatedUser;
 use crate::error::ApiError;
 use crate::models::roles::normalize_membership_role;
-use crate::models::Asset;
-use crate::models::RelationType;
+use crate::models::{Asset, RelationType, INSTANCE_ADMINS_GROUP};
 use crate::service::roles_service::RolesService;
 use crate::service::Services;
 use crate::tenant::TenantPoolManager;
@@ -202,6 +201,114 @@ pub fn extract_claims_for_cedar(user: &AuthenticatedUser) -> JwtClaims {
     user.to_cedar_claims()
 }
 
+/// Per-request authorization inputs resolved ONCE per request
+/// (workstream 69b4bb4c, task 147a17fc — Phase 1b).
+///
+/// - `effective_groups`: the UNION of the pep-fetched Kanidm groups (the
+///   token's groups claim) and the PDT-native group names resolved at
+///   read time from the instance's group_members tables (by principal
+///   id). UNION SEMANTICS: a failure in either source degrades to the
+///   other, never to zero — the token-claim transport (mint staleness /
+///   mint gaps / enrichment failures / SPN-vs-UUID form mismatch) becomes
+///   harmless the moment the PDT-native tables carry real memberships.
+/// - `admin_bypass`: the principal is a member of the distinguished
+///   instance-admins group — sees ALL assets within this instance
+///   (audited). Fail-closed: the bypass is a widening, so its source
+///   failing means NO bypass (never degrade-open).
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedAuthz {
+    pub effective_groups: Vec<String>,
+    pub admin_bypass: bool,
+}
+
+/// Resolve the per-request authorization inputs (Phase 1b).
+///
+/// Reads the PDT-native group memberships for the principal (by id — the
+/// token sub) from THIS request's instance store and merges them with the
+/// token's groups claim. The DB read failing degrades to the JWT groups
+/// (never to zero — union semantics); the admin-bypass check failing
+/// degrades to NO bypass (fail-closed — it is a widening).
+pub async fn resolve_instance_authz(services: &Services, claims: &JwtClaims) -> ResolvedAuthz {
+    // PDT-native groups (read-time, by principal id). Failure → empty —
+    // the JWT groups (if any) still apply; never zero while either
+    // source has material.
+    let pdt_groups = match services.groups().memberships_for(&claims.sub).await {
+        Ok(groups) => groups,
+        Err(e) => {
+            tracing::warn!(
+                "PDT-native group resolution failed for sub {} (degrading to token groups — union semantics, 147a17fc): {}",
+                claims.sub,
+                e
+            );
+            Vec::new()
+        }
+    };
+
+    // Admin bypass: member of the distinguished instance-admins group.
+    // Fail-closed (a widening must never degrade-open).
+    let admin_bypass = match services.groups().is_instance_admin(&claims.sub).await {
+        Ok(is_admin) => is_admin,
+        Err(e) => {
+            tracing::warn!(
+                "instance-admins membership check failed for sub {} (failing closed — no bypass): {}",
+                claims.sub,
+                e
+            );
+            false
+        }
+    };
+
+    // Union: token groups ∪ PDT-native groups, deduped + sorted for
+    // deterministic entity bytes.
+    let mut effective_groups: Vec<String> = Vec::new();
+    if let Some(serde_json::Value::Array(groups)) = claims.extra.get("groups") {
+        for g in groups {
+            if let serde_json::Value::String(s) = g {
+                effective_groups.push(s.clone());
+            }
+        }
+    }
+    effective_groups.extend(pdt_groups);
+    effective_groups.sort();
+    effective_groups.dedup();
+
+    ResolvedAuthz {
+        effective_groups,
+        admin_bypass,
+    }
+}
+
+/// Audit an admin-bypass decision (147a17fc: the bypass is audited).
+/// Propagates failures — an unaudited bypass is a silent widening
+/// (fail-loud doctrine): the caller denies when the audit write fails.
+async fn audit_admin_bypass(
+    services: &Services,
+    user_id: &str,
+    instance_id: Option<&str>,
+    action: &str,
+    detail: serde_json::Value,
+) -> Result<(), ApiError> {
+    services
+        .audit()
+        .create(
+            "instance",
+            instance_id.unwrap_or("global"),
+            crate::models::AuditAction::AdminBypass,
+            serde_json::json!({ "action": action, "detail": detail }),
+            user_id,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            tracing::error!(
+                "Admin-bypass AUDIT WRITE FAILED for sub {} (denying — an unaudited bypass is a silent widening): {}",
+                user_id,
+                e
+            );
+            e
+        })
+}
+
 /// Check whether Cedar authorization should be enforced for this asset.
 ///
 /// Assets with `auth_context` present are Cedar-enforced.
@@ -215,9 +322,14 @@ pub fn should_enforce_cedar(asset: &Asset) -> bool {
 /// This is the main enforcement function used by handlers.
 /// For grandfathered assets (no auth_context), always allows.
 /// For Cedar-enforced assets, evaluates the policy.
+///
+/// `pdt_groups` = the effective groups (token ∪ PDT-native, Phase 1b) —
+/// pass `resolved.effective_groups` from `resolve_instance_authz`; the
+/// resolved wrappers below add the admin bypass + audit.
 pub fn check_permission(
     authorizer: &CedarAuthorizer,
     claims: &JwtClaims,
+    pdt_groups: &[String],
     action: &str,
     asset: &Asset,
 ) -> Result<(), ApiError> {
@@ -225,7 +337,7 @@ pub fn check_permission(
         return Ok(()); // Grandfathered — open access
     }
 
-    let allowed = evaluate_permission(authorizer, claims, action, asset)?;
+    let allowed = evaluate_permission(authorizer, claims, pdt_groups, action, asset)?;
     if !allowed {
         tracing::warn!(
             "Cedar denied {} on asset {} for user {}",
@@ -241,13 +353,55 @@ pub fn check_permission(
     Ok(())
 }
 
+/// Async wrapper (Phase 1b): the admin bypass + audit + merged groups.
+///
+/// A principal in the distinguished instance-admins group sees ALL assets
+/// within this instance — the bypass short-circuits Cedar per-asset
+/// evaluation and is AUDITED (one entry per decision; a failed audit
+/// write denies — an unaudited bypass is a silent widening).
+pub async fn check_permission_resolved(
+    services: &Services,
+    authorizer: &CedarAuthorizer,
+    claims: &JwtClaims,
+    resolved: &ResolvedAuthz,
+    instance_id: Option<&str>,
+    action: &str,
+    asset: &Asset,
+) -> Result<(), ApiError> {
+    if !should_enforce_cedar(asset) {
+        return Ok(()); // Grandfathered — open access
+    }
+    if resolved.admin_bypass {
+        audit_admin_bypass(
+            services,
+            &claims.sub,
+            instance_id,
+            action,
+            serde_json::json!({ "asset_id": asset.id }),
+        )
+        .await?;
+        return Ok(());
+    }
+    check_permission(
+        authorizer,
+        claims,
+        &resolved.effective_groups,
+        action,
+        asset,
+    )
+}
+
 /// Evaluate a Cedar authorization request for a specific asset.
 ///
 /// Returns `Ok(true)` if the action is allowed, `Ok(false)` if denied.
 /// Returns `Err` only if there is an entity-building error.
+///
+/// `pdt_groups` = the effective groups (token ∪ PDT-native, Phase 1b) —
+/// the principal entity's `groups` attribute carries the union.
 pub fn evaluate_permission(
     authorizer: &CedarAuthorizer,
     claims: &JwtClaims,
+    pdt_groups: &[String],
     action: &str,
     asset: &Asset,
 ) -> Result<bool, ApiError> {
@@ -268,7 +422,8 @@ pub fn evaluate_permission(
 
     // Build entities so Cedar can evaluate attributes
     let asset_entity = crate::cedar::entity::asset_to_cedar_entity(asset);
-    let principal_entity = crate::cedar::entity::user_to_cedar_principal(claims);
+    let principal_entity =
+        crate::cedar::entity::user_to_cedar_principal_with_groups(claims, pdt_groups);
 
     let entities =
         Entities::from_entities([asset_entity, principal_entity], None).map_err(|e| {
@@ -291,6 +446,10 @@ pub fn evaluate_permission(
 ///
 /// Used by relation handlers that need to verify permission on related assets
 /// but don't already have the full asset loaded.
+///
+/// Phase 1b: resolves the effective groups + admin bypass internally (one
+/// resolve per call — relation writes are low-frequency, the resolve is
+/// one indexed SELECT).
 pub async fn check_asset_permission_by_id(
     services: &Services,
     authorizer: &CedarAuthorizer,
@@ -299,7 +458,16 @@ pub async fn check_asset_permission_by_id(
     asset_id: &str,
 ) -> Result<(), ApiError> {
     let asset = services.assets().get_by_id(asset_id).await?;
-    if let Some(authz) = check_permission(authorizer, claims, action, &asset).err() {
+    let resolved = resolve_instance_authz(services, claims).await;
+    if let Some(authz) = check_permission(
+        authorizer,
+        claims,
+        &resolved.effective_groups,
+        action,
+        &asset,
+    )
+    .err()
+    {
         return Err(authz);
     }
     Ok(())
@@ -475,9 +643,12 @@ pub async fn check_membership_permission(
 ///
 /// Returns only the assets that the given user is allowed to perform the action on.
 /// Grandfathered assets (no `auth_context`) are always included.
+///
+/// `pdt_groups` = the effective groups (token ∪ PDT-native, Phase 1b).
 pub fn filter_by_permission(
     authorizer: &CedarAuthorizer,
     claims: &JwtClaims,
+    pdt_groups: &[String],
     action: &str,
     assets: Vec<Asset>,
 ) -> Vec<Asset> {
@@ -487,7 +658,7 @@ pub fn filter_by_permission(
             if !should_enforce_cedar(asset) {
                 return true; // Grandfathered — always include
             }
-            match evaluate_permission(authorizer, claims, action, asset) {
+            match evaluate_permission(authorizer, claims, pdt_groups, action, asset) {
                 Ok(allowed) => allowed,
                 Err(e) => {
                     tracing::warn!(
@@ -500,6 +671,39 @@ pub fn filter_by_permission(
             }
         })
         .collect()
+}
+
+/// Async wrapper (Phase 1b): the admin bypass + audit + merged groups for
+/// list-class reads. A bypass returns ALL assets and audits ONCE per
+/// request (a failed audit write denies — an unaudited bypass is a
+/// silent widening).
+pub async fn filter_by_permission_resolved(
+    services: &Services,
+    authorizer: &CedarAuthorizer,
+    claims: &JwtClaims,
+    resolved: &ResolvedAuthz,
+    instance_id: Option<&str>,
+    action: &str,
+    assets: Vec<Asset>,
+) -> Result<Vec<Asset>, ApiError> {
+    if resolved.admin_bypass && assets.iter().any(|a| should_enforce_cedar(a)) {
+        audit_admin_bypass(
+            services,
+            &claims.sub,
+            instance_id,
+            action,
+            serde_json::json!({ "assets_visible": assets.len() }),
+        )
+        .await?;
+        return Ok(assets);
+    }
+    Ok(filter_by_permission(
+        authorizer,
+        claims,
+        &resolved.effective_groups,
+        action,
+        assets,
+    ))
 }
 
 /// Band key: the full Cedar-entity input tuple for one asset.
@@ -545,6 +749,8 @@ fn cedar_band_key(asset: &Asset) -> String {
 /// assets by their full Cedar-input tuple and evaluates Cedar ONCE per
 /// distinct tuple, applying the verdict to every asset in the group.
 ///
+/// `pdt_groups` = the effective groups (token ∪ PDT-native, Phase 1b).
+///
 /// The search handler previously ran `evaluate_permission` per row — a
 /// 904-row inbox was 904 Cedar evals per view, O(rows) authz on every read.
 /// Mailbox-class reads (rows share one band) collapse to 1–5 evals.
@@ -555,6 +761,7 @@ fn cedar_band_key(asset: &Asset) -> String {
 pub fn filter_by_permission_batched(
     authorizer: &CedarAuthorizer,
     claims: &JwtClaims,
+    pdt_groups: &[String],
     action: &str,
     assets: Vec<Asset>,
 ) -> Vec<Asset> {
@@ -570,7 +777,7 @@ pub fn filter_by_permission_batched(
         if verdicts.contains_key(&key) {
             continue;
         }
-        let verdict = match evaluate_permission(authorizer, claims, action, asset) {
+        let verdict = match evaluate_permission(authorizer, claims, pdt_groups, action, asset) {
             Ok(allowed) => allowed,
             Err(e) => {
                 tracing::warn!(
@@ -596,6 +803,39 @@ pub fn filter_by_permission_batched(
                 .unwrap_or(false)
         })
         .collect()
+}
+
+/// Async wrapper (Phase 1b): the admin bypass + audit + merged groups for
+/// batched list-class reads. A bypass returns ALL assets and audits ONCE
+/// per request (a failed audit write denies — an unaudited bypass is a
+/// silent widening).
+pub async fn filter_by_permission_batched_resolved(
+    services: &Services,
+    authorizer: &CedarAuthorizer,
+    claims: &JwtClaims,
+    resolved: &ResolvedAuthz,
+    instance_id: Option<&str>,
+    action: &str,
+    assets: Vec<Asset>,
+) -> Result<Vec<Asset>, ApiError> {
+    if resolved.admin_bypass && assets.iter().any(|a| should_enforce_cedar(a)) {
+        audit_admin_bypass(
+            services,
+            &claims.sub,
+            instance_id,
+            action,
+            serde_json::json!({ "assets_visible": assets.len() }),
+        )
+        .await?;
+        return Ok(assets);
+    }
+    Ok(filter_by_permission_batched(
+        authorizer,
+        claims,
+        &resolved.effective_groups,
+        action,
+        assets,
+    ))
 }
 
 #[cfg(test)]
@@ -676,7 +916,7 @@ mod created_by_delete_tests {
         let authorizer = test_authorizer();
         let asset = workspace_asset("alice");
         let claims = claims_for("alice", "user");
-        let allowed = evaluate_permission(&authorizer, &claims, "Delete", &asset)
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "Delete", &asset)
             .expect("evaluation succeeds");
         assert!(allowed, "creator must be able to delete their own asset");
     }
@@ -686,7 +926,7 @@ mod created_by_delete_tests {
         let authorizer = test_authorizer();
         let asset = workspace_asset("alice");
         let claims = claims_for("bob", "user");
-        let allowed = evaluate_permission(&authorizer, &claims, "Delete", &asset)
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "Delete", &asset)
             .expect("evaluation succeeds");
         assert!(!allowed, "non-creator non-admin must NOT be able to delete");
     }
@@ -696,7 +936,7 @@ mod created_by_delete_tests {
         let authorizer = test_authorizer();
         let asset = workspace_asset("alice");
         let claims = claims_for("super", "admin");
-        let allowed = evaluate_permission(&authorizer, &claims, "Delete", &asset)
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "Delete", &asset)
             .expect("evaluation succeeds");
         assert!(allowed, "admin (super_admin) delete must keep working");
     }
@@ -706,8 +946,8 @@ mod created_by_delete_tests {
         let authorizer = test_authorizer();
         let asset = workspace_asset("alice");
         let claims = claims_for("alice", "user");
-        let allowed =
-            evaluate_permission(&authorizer, &claims, "Edit", &asset).expect("evaluation succeeds");
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "Edit", &asset)
+            .expect("evaluation succeeds");
         assert!(allowed, "created_by Edit policy must keep working");
     }
 }
@@ -788,8 +1028,8 @@ mod team_sub_keyed_tests {
         let authorizer = test_authorizer();
         let asset = team_asset(vec!["30309a40-2588-4cb6-8bda-0f7ccafd8d95".to_string()]);
         let claims = claims_no_groups("30309a40-2588-4cb6-8bda-0f7ccafd8d95", "user", None);
-        let allowed =
-            evaluate_permission(&authorizer, &claims, "View", &asset).expect("evaluation succeeds");
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "View", &asset)
+            .expect("evaluation succeeds");
         assert!(
             allowed,
             "byte-exact sub match in owner_groups must grant View for a groups-less token"
@@ -802,8 +1042,8 @@ mod team_sub_keyed_tests {
         let authorizer = test_authorizer();
         let asset = team_asset(vec!["30309a40-2588-4cb6-8bda-0f7ccafd8d95".to_string()]);
         let claims = claims_no_groups("30309a40-2588-4cb6-8bda-0f7ccafd8d95", "user", None);
-        let allowed =
-            evaluate_permission(&authorizer, &claims, "Edit", &asset).expect("evaluation succeeds");
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "Edit", &asset)
+            .expect("evaluation succeeds");
         assert!(
             allowed,
             "byte-exact sub match in owner_groups must grant Edit for a groups-less token"
@@ -817,8 +1057,8 @@ mod team_sub_keyed_tests {
         let authorizer = test_authorizer();
         let asset = team_asset(vec!["agent-abc-123".to_string()]);
         let claims = claims_no_groups("agent-abc-123", "user", None);
-        let allowed =
-            evaluate_permission(&authorizer, &claims, "View", &asset).expect("evaluation succeeds");
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "View", &asset)
+            .expect("evaluation succeeds");
         assert!(
             allowed,
             "non-admin principal with sub ∈ owner_groups must be allowed"
@@ -831,8 +1071,8 @@ mod team_sub_keyed_tests {
         let authorizer = test_authorizer();
         let asset = team_asset(vec!["someone-elses-sub".to_string()]);
         let claims = claims_no_groups("30309a40-2588-4cb6-8bda-0f7ccafd8d95", "user", None);
-        let allowed =
-            evaluate_permission(&authorizer, &claims, "View", &asset).expect("evaluation succeeds");
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "View", &asset)
+            .expect("evaluation succeeds");
         assert!(
             !allowed,
             "sub not in owner_groups and no groups claim must stay denied — no widening"
@@ -850,8 +1090,8 @@ mod team_sub_keyed_tests {
             "user",
             Some("zobde"),
         );
-        let allowed =
-            evaluate_permission(&authorizer, &claims, "View", &asset).expect("evaluation succeeds");
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "View", &asset)
+            .expect("evaluation succeeds");
         assert!(allowed, "SPN-form match in owner_groups must grant View");
     }
 
@@ -865,8 +1105,8 @@ mod team_sub_keyed_tests {
             "groups".to_string(),
             serde_json::Value::Array(vec![serde_json::Value::String("developers".to_string())]),
         );
-        let allowed =
-            evaluate_permission(&authorizer, &claims, "View", &asset).expect("evaluation succeeds");
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "View", &asset)
+            .expect("evaluation succeeds");
         assert!(allowed, "groups-claim matching must keep working");
     }
 }
@@ -1049,8 +1289,9 @@ mod batched_filter_tests {
             ),
         ];
 
-        let per_row = filter_by_permission(&authorizer, &claims, "View", fixture.clone());
-        let batched = filter_by_permission_batched(&authorizer, &claims, "View", fixture.clone());
+        let per_row = filter_by_permission(&authorizer, &claims, &[], "View", fixture.clone());
+        let batched =
+            filter_by_permission_batched(&authorizer, &claims, &[], "View", fixture.clone());
 
         assert_eq!(
             visible_ids(&per_row),
@@ -1093,8 +1334,9 @@ mod batched_filter_tests {
             })
             .collect();
 
-        let per_row = filter_by_permission(&authorizer, &claims, "View", fixture.clone());
-        let batched = filter_by_permission_batched(&authorizer, &claims, "View", fixture.clone());
+        let per_row = filter_by_permission(&authorizer, &claims, &[], "View", fixture.clone());
+        let batched =
+            filter_by_permission_batched(&authorizer, &claims, &[], "View", fixture.clone());
 
         assert_eq!(per_row.len(), 50, "sub match must allow all 50 rows");
         assert_eq!(
@@ -1121,7 +1363,7 @@ mod membership_enforcement_tests {
     use crate::models::{CreateRelationRequest, RelationType};
     use crate::repository::{
         SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
-        SqliteRelationRepository,
+        SqliteGroupRepository, SqliteRelationRepository,
     };
     use crate::service::Services;
     use pep::cedar::CedarConfig;
@@ -1145,11 +1387,17 @@ mod membership_enforcement_tests {
             .execute(&pool)
             .await
             .expect("migrations");
+        let groups_sql = include_str!("../../migrations/sqlite/002_groups.sql");
+        sqlx::raw_sql(groups_sql)
+            .execute(&pool)
+            .await
+            .expect("groups migrations");
         Services::from_repositories(
             SqliteAssetRepository::new(pool.clone()),
             SqliteRelationRepository::new(pool.clone()),
             SqliteCollectionRepository::new(pool.clone()),
-            SqliteAuditRepository::new(pool),
+            SqliteAuditRepository::new(pool.clone()),
+            SqliteGroupRepository::new(pool),
         )
     }
 
@@ -1488,5 +1736,396 @@ mod membership_enforcement_tests {
         .await
         .expect_err("member must NOT manage agents");
         assert!(matches!(err, ApiError::Forbidden(_)));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — PDT-native groups + cedar merge (workstream 69b4bb4c, tasks
+// a9f91cfb + 147a17fc; release checklist v3 regression test for the CLASS)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod native_groups_merge_tests {
+    //! THE CLASS regression pins (owner work order 2026-11-02):
+    //! read-time resolution + union semantics + admin bypass +
+    //! names-not-IDs. The live casualty this fixes: a principal whose
+    //! token-claim transport failed (mint staleness / mint gaps
+    //! 6c8efe55 / enrichment failure 365be03f / SPN-vs-UUID form
+    //! mismatch) saw lying "No assets found" while the store + bands
+    //! were healthy (40ccddef) — the merge makes that failure mode
+    //! harmless the moment the PDT-native groups carry real memberships.
+
+    use super::*;
+    use crate::models::AuthContext;
+    use crate::repository::{
+        SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
+        SqliteGroupRepository, SqliteRelationRepository,
+    };
+    use crate::service::group_service::GroupService;
+    use crate::service::Services;
+    use pep::cedar::CedarConfig;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::path::PathBuf;
+
+    async fn test_services() -> Services {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("in-memory sqlite");
+        let migration_sql = include_str!("../../migrations/sqlite/001_initial.sql");
+        sqlx::raw_sql(migration_sql)
+            .execute(&pool)
+            .await
+            .expect("migrations");
+        let groups_sql = include_str!("../../migrations/sqlite/002_groups.sql");
+        sqlx::raw_sql(groups_sql)
+            .execute(&pool)
+            .await
+            .expect("groups migrations");
+        Services::from_repositories(
+            SqliteAssetRepository::new(pool.clone()),
+            SqliteRelationRepository::new(pool.clone()),
+            SqliteCollectionRepository::new(pool.clone()),
+            SqliteAuditRepository::new(pool.clone()),
+            SqliteGroupRepository::new(pool),
+        )
+    }
+
+    fn test_authorizer() -> CedarAuthorizer {
+        let config = CedarConfig {
+            policy_path: PathBuf::from("/nonexistent/policies.cedar"),
+            schema_path: None,
+            entities_path: None,
+            default_decision: Default::default(),
+            validate_on_load: true,
+            policy_store_url: None,
+            policy_store_token: None,
+            embedded_policy: Some(include_str!("../../policies/rbac.cedar")),
+            embedded_schema: Some(include_str!("../../policies/schema.cedarschema")),
+        };
+        CedarAuthorizer::new(config).expect("cedar CLI gate: embedded policy+schema validate")
+    }
+
+    /// THE CLASS: a token whose groups claim is EMPTY (mint gap /
+    /// enrichment failure / mint staleness — 6c8efe55 + 365be03f).
+    fn claims_no_groups(sub: &str) -> JwtClaims {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "role".to_string(),
+            serde_json::Value::String("user".to_string()),
+        );
+        JwtClaims {
+            sub: sub.to_string(),
+            iss: "https://idp.tanbal.ir".to_string(),
+            aud: None,
+            exp: 9999999999,
+            iat: None,
+            email: Some(format!("{}@example.com", sub)),
+            name: None,
+            preferred_username: None,
+            extra,
+        }
+    }
+
+    fn team_asset(owner_groups: Vec<String>) -> Asset {
+        Asset {
+            id: "eynak-asset-1".to_string(),
+            title: "نیازمندی ۱".to_string(),
+            content: None,
+            tags: vec![],
+            metadata: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            created_by: "negah-agent".to_string(),
+            updated_by: "negah-agent".to_string(),
+            deleted_at: None,
+            auth_context: Some(AuthContext {
+                visibility: "team".to_string(),
+                owner_groups,
+                confidentiality: String::new(),
+            }),
+        }
+    }
+
+    /// PIN 1 — READ-TIME RESOLUTION: a groups-LESS token (the mint-gap
+    /// class) whose principal is a member of a PDT-native group that the
+    /// band references → View ALLOW. The membership resolves from the
+    /// group_members tables at read time, NOT from the token.
+    #[tokio::test]
+    async fn read_time_resolution_grants_without_token_groups() {
+        let services = test_services().await;
+        let authorizer = test_authorizer();
+
+        // The band references the PDT-native group NAME (canonical).
+        let asset = team_asset(vec!["eynak-team".to_string()]);
+        // The principal is a member of that PDT-native group.
+        let group = services
+            .groups()
+            .create_group("eynak-team", "", "seeder")
+            .await
+            .expect("create group");
+        services
+            .groups()
+            .add_member(&group.id, "mehrdad-sub", "seeder")
+            .await
+            .expect("add member");
+
+        let claims = claims_no_groups("mehrdad-sub");
+        let resolved = resolve_instance_authz(&services, &claims).await;
+        assert_eq!(
+            resolved.effective_groups,
+            vec!["eynak-team".to_string()],
+            "effective groups resolve from the PDT tables at read time"
+        );
+        let allowed = evaluate_permission(
+            &authorizer,
+            &claims,
+            &resolved.effective_groups,
+            "View",
+            &asset,
+        )
+        .expect("evaluation succeeds");
+        assert!(
+            allowed,
+            "THE CLASS: a groups-less token with a PDT-native membership must see the banded asset"
+        );
+    }
+
+    /// PIN 2 — UNION SEMANTICS: token groups ∪ PDT-native groups; a
+    /// failure in either source degrades to the other, never to zero.
+    #[tokio::test]
+    async fn union_merges_token_and_native_groups() {
+        let services = test_services().await;
+        let group = services
+            .groups()
+            .create_group("native-team", "", "seeder")
+            .await
+            .expect("create group");
+        services
+            .groups()
+            .add_member(&group.id, "sub-1", "seeder")
+            .await
+            .expect("add member");
+
+        // Token carries "token-team"; PDT-native carries "native-team".
+        let mut claims = claims_no_groups("sub-1");
+        claims.extra.insert(
+            "groups".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String("token-team".to_string())]),
+        );
+        let resolved = resolve_instance_authz(&services, &claims).await;
+        assert_eq!(
+            resolved.effective_groups,
+            vec!["native-team".to_string(), "token-team".to_string()],
+            "the union carries BOTH sources, deduped + sorted"
+        );
+
+        // Union semantics: an asset banded on EITHER source matches.
+        let authorizer = test_authorizer();
+        let token_banded = team_asset(vec!["token-team".to_string()]);
+        let native_banded = team_asset(vec!["native-team".to_string()]);
+        for asset in [token_banded, native_banded] {
+            let allowed = evaluate_permission(
+                &authorizer,
+                &claims,
+                &resolved.effective_groups,
+                "View",
+                &asset,
+            )
+            .expect("evaluation succeeds");
+            assert!(allowed, "a band on EITHER source must match the union");
+        }
+    }
+
+    /// PIN 3 — ADMIN BYPASS: a member of the distinguished instance-admins
+    /// group sees ALL assets within the instance (Cedar-denied ones too),
+    /// and the bypass is AUDITED.
+    #[tokio::test]
+    async fn admin_bypass_sees_all_and_audits() {
+        let services = test_services().await;
+        let authorizer = test_authorizer();
+
+        // An asset the principal can NEVER match by band (deny arm).
+        let denied_asset = team_asset(vec!["someone-elses-group".to_string()]);
+        // The principal is an instance admin (PDT-native).
+        let admins = services
+            .groups()
+            .get_group_by_name(INSTANCE_ADMINS_GROUP)
+            .await
+            .expect("resolve")
+            .expect("the distinguished group is seeded by migration 002");
+        services
+            .groups()
+            .add_member(&admins.id, "admin-sub", "seeder")
+            .await
+            .expect("add admin member");
+
+        let claims = claims_no_groups("admin-sub");
+        let resolved = resolve_instance_authz(&services, &claims).await;
+        assert!(resolved.admin_bypass, "instance-admins membership = bypass");
+
+        // The bypass short-circuit: sees the Cedar-denied asset, audited.
+        let visible = filter_by_permission_batched_resolved(
+            &services,
+            &authorizer,
+            &claims,
+            &resolved,
+            Some("eynak-leaf"),
+            "View",
+            vec![denied_asset],
+        )
+        .await
+        .expect("bypass filter succeeds");
+        assert_eq!(visible.len(), 1, "the admin bypass sees ALL assets");
+
+        // AUDITED: the bypass decision is on the audit trail.
+        let entries = services
+            .audit()
+            .list(Some("instance"), Some("eynak-leaf"), None, 100, None)
+            .await
+            .expect("audit list")
+            .0;
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.action == crate::models::AuditAction::AdminBypass),
+            "the bypass must be audited (admin_bypass entry)"
+        );
+    }
+
+    /// PIN 4 — NAMES-NOT-IDS: the band references the PDT group NAME and
+    /// the membership resolves by principal id — the SPN-vs-UUID form
+    /// mismatch class dies. A UUID-form member id matches a name-form
+    /// band; an SPN-form band member matches the same way.
+    #[tokio::test]
+    async fn band_matching_resolves_membership_not_string_forms() {
+        let services = test_services().await;
+        let authorizer = test_authorizer();
+
+        // Band stores the canonical group NAME.
+        let asset = team_asset(vec!["plt-agents".to_string()]);
+        // Members added by UUID AND by SPN-shaped ids — both resolve.
+        let group = services
+            .groups()
+            .create_group("plt-agents", "", "seeder")
+            .await
+            .expect("create group");
+        services
+            .groups()
+            .add_member(&group.id, "9f2a3bed-d1fc-40ee-a886-2b68a9954bd4", "seeder")
+            .await
+            .expect("uuid-form member");
+        services
+            .groups()
+            .add_member(&group.id, "agent-a860941e@idp.example.com", "seeder")
+            .await
+            .expect("spn-form member");
+
+        for sub in [
+            "9f2a3bed-d1fc-40ee-a886-2b68a9954bd4",
+            "agent-a860941e@idp.example.com",
+        ] {
+            let claims = claims_no_groups(sub);
+            let resolved = resolve_instance_authz(&services, &claims).await;
+            let allowed = evaluate_permission(
+                &authorizer,
+                &claims,
+                &resolved.effective_groups,
+                "View",
+                &asset,
+            )
+            .expect("evaluation succeeds");
+            assert!(
+                allowed,
+                "membership resolves by principal id — the band references the NAME, not a string form ({})",
+                sub
+            );
+        }
+    }
+
+    /// NO WIDENING: no membership in any banded group + no token groups →
+    /// still DENY (the merge grants nothing the principal does not
+    /// verifiably hold).
+    #[tokio::test]
+    async fn no_membership_still_denied() {
+        let services = test_services().await;
+        let authorizer = test_authorizer();
+        let asset = team_asset(vec!["eynak-team".to_string()]);
+        let claims = claims_no_groups("outsider-sub");
+        let resolved = resolve_instance_authz(&services, &claims).await;
+        assert!(resolved.effective_groups.is_empty());
+        assert!(!resolved.admin_bypass);
+        let allowed = evaluate_permission(
+            &authorizer,
+            &claims,
+            &resolved.effective_groups,
+            "View",
+            &asset,
+        )
+        .expect("evaluation succeeds");
+        assert!(!allowed, "no membership + no token groups must stay denied");
+    }
+
+    /// The distinguished instance-admins group is SEEDED in every store
+    /// (migration 002) and PROTECTED (cannot be deleted; the name is
+    /// reserved at create).
+    #[tokio::test]
+    async fn distinguished_group_seeded_and_protected() {
+        let services = test_services().await;
+        let seeded = services
+            .groups()
+            .get_group_by_name(INSTANCE_ADMINS_GROUP)
+            .await
+            .expect("resolve");
+        assert!(seeded.is_some(), "migration 002 seeds instance-admins");
+        let group = seeded.unwrap();
+        assert_eq!(group.id, crate::models::INSTANCE_ADMINS_GROUP_ID);
+
+        // Deletion refused.
+        let err = services.groups().delete_group(&group.id).await.unwrap_err();
+        assert!(matches!(err, ApiError::BadRequest(_)));
+
+        // Create-by-that-name refused (ONE home).
+        let err = GroupService::create(&services, INSTANCE_ADMINS_GROUP, "", "x")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ApiError::Conflict(_)));
+    }
+
+    /// Group management authorization: instance admins manage; plain
+    /// members do not (the service-level pin; the handler wraps this).
+    #[tokio::test]
+    async fn instance_admin_manages_groups() {
+        let services = test_services().await;
+        let admins = services
+            .groups()
+            .get_group_by_name(INSTANCE_ADMINS_GROUP)
+            .await
+            .expect("resolve")
+            .expect("seeded");
+        services
+            .groups()
+            .add_member(&admins.id, "boss-sub", "seeder")
+            .await
+            .expect("add admin");
+
+        let is_admin = services
+            .groups()
+            .is_instance_admin("boss-sub")
+            .await
+            .expect("check");
+        assert!(is_admin, "instance-admins member manages groups");
+        let is_plain = services
+            .groups()
+            .is_instance_admin("random-sub")
+            .await
+            .expect("check");
+        assert!(!is_plain, "a non-member does not manage groups");
     }
 }

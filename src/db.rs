@@ -62,6 +62,16 @@ impl Database {
         self.db.collection("audit")
     }
 
+    /// Get the groups collection (PDT-native per-instance groups, a9f91cfb)
+    pub fn groups(&self) -> Collection<crate::models::Group> {
+        self.db.collection("groups")
+    }
+
+    /// Get the group_members collection (a9f91cfb)
+    pub fn group_members(&self) -> Collection<crate::models::GroupMember> {
+        self.db.collection("group_members")
+    }
+
     /// Create database indices
     pub async fn create_indices(&self) -> Result<()> {
         // Asset indices

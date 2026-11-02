@@ -5,6 +5,7 @@ mod audit;
 mod auth_context;
 mod collection;
 pub mod directory;
+pub mod group;
 mod relation;
 pub mod roles;
 mod tag;
@@ -19,6 +20,10 @@ pub use collection::{
     AddAssetRequest, Collection, CreateCollectionRequest, UpdateCollectionRequest,
 };
 pub use directory::{DirectoryEntry, UpsertDirectoryRequest};
+pub use group::{
+    AddGroupMemberRequest, CreateGroupRequest, Group, GroupMember, GroupMembersResponse,
+    MemberGroupsResponse, INSTANCE_ADMINS_GROUP, INSTANCE_ADMINS_GROUP_ID,
+};
 pub use relation::{CreateRelationRequest, Relation, RelationType};
 pub use roles::{MembershipRoleRow, RoleAnswer};
 pub use tag::{validate_category, validate_value, AddTagRequest, Tag};

@@ -116,7 +116,18 @@ pub async fn get_asset(
     if let Some(authorizer) = tx.authorizer() {
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
-            crate::cedar::enforcement::check_permission(authorizer, &claims, "View", &asset)?;
+            let resolved =
+                crate::cedar::enforcement::resolve_instance_authz(tx.services(), &claims).await;
+            crate::cedar::enforcement::check_permission_resolved(
+                tx.services(),
+                authorizer,
+                &claims,
+                &resolved,
+                tx.instance_id(),
+                "View",
+                &asset,
+            )
+            .await?;
         }
     }
 
@@ -150,7 +161,18 @@ pub async fn update_asset(
         let asset = AssetService::get(tx.services(), &id).await?;
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
-            crate::cedar::enforcement::check_permission(authorizer, &claims, "Edit", &asset)?;
+            let resolved =
+                crate::cedar::enforcement::resolve_instance_authz(tx.services(), &claims).await;
+            crate::cedar::enforcement::check_permission_resolved(
+                tx.services(),
+                authorizer,
+                &claims,
+                &resolved,
+                tx.instance_id(),
+                "Edit",
+                &asset,
+            )
+            .await?;
         }
     }
 
@@ -183,7 +205,18 @@ pub async fn delete_asset(
         let asset = AssetService::get(tx.services(), &id).await?;
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
-            crate::cedar::enforcement::check_permission(authorizer, &claims, "Delete", &asset)?;
+            let resolved =
+                crate::cedar::enforcement::resolve_instance_authz(tx.services(), &claims).await;
+            crate::cedar::enforcement::check_permission_resolved(
+                tx.services(),
+                authorizer,
+                &claims,
+                &resolved,
+                tx.instance_id(),
+                "Delete",
+                &asset,
+            )
+            .await?;
         }
     }
 
@@ -210,8 +243,14 @@ pub async fn list_assets(
     Enrichment(enrichment): Enrichment,
     Query(params): Query<ListAssetsParams>,
 ) -> Result<Json<PaginatedResponse<Asset>>> {
-    // 365be03f: refuse lying absence — same contract as search.
-    if enrichment == crate::auth::AuthEnrichment::Degraded {
+    let claims = extract_claims(&user);
+    let resolved = crate::cedar::enforcement::resolve_instance_authz(tx.services(), &claims).await;
+
+    // 365be03f: refuse lying absence — same contract as search. Phase 1b
+    // (147a17fc): the merge makes the transport failure harmless — a
+    // degraded TOKEN still carries PDT-native memberships, so Degraded
+    // only refuses when BOTH sources are empty (zero = zero, honestly).
+    if enrichment == crate::auth::AuthEnrichment::Degraded && resolved.effective_groups.is_empty() {
         return Err(ApiError::AuthDegraded);
     }
     let (assets, next_cursor) = AssetService::list(
@@ -231,8 +270,16 @@ pub async fn list_assets(
 
     // Cedar enforcement: filter out assets the user cannot view
     let filtered = if let Some(authorizer) = tx.authorizer() {
-        let claims = extract_claims(&user);
-        crate::cedar::enforcement::filter_by_permission(authorizer, &claims, "View", assets)
+        crate::cedar::enforcement::filter_by_permission_resolved(
+            tx.services(),
+            authorizer,
+            &claims,
+            &resolved,
+            tx.instance_id(),
+            "View",
+            assets,
+        )
+        .await?
     } else {
         assets
     };
@@ -271,7 +318,18 @@ pub async fn add_tag(
         let asset = AssetService::get(tx.services(), &id).await?;
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
-            crate::cedar::enforcement::check_permission(authorizer, &claims, "Tag", &asset)?;
+            let resolved =
+                crate::cedar::enforcement::resolve_instance_authz(tx.services(), &claims).await;
+            crate::cedar::enforcement::check_permission_resolved(
+                tx.services(),
+                authorizer,
+                &claims,
+                &resolved,
+                tx.instance_id(),
+                "Tag",
+                &asset,
+            )
+            .await?;
         }
     }
 
@@ -305,7 +363,18 @@ pub async fn remove_tag(
         let asset = AssetService::get(tx.services(), &id).await?;
         if crate::cedar::enforcement::should_enforce_cedar(&asset) {
             let claims = extract_claims(&user);
-            crate::cedar::enforcement::check_permission(authorizer, &claims, "Tag", &asset)?;
+            let resolved =
+                crate::cedar::enforcement::resolve_instance_authz(tx.services(), &claims).await;
+            crate::cedar::enforcement::check_permission_resolved(
+                tx.services(),
+                authorizer,
+                &claims,
+                &resolved,
+                tx.instance_id(),
+                "Tag",
+                &asset,
+            )
+            .await?;
         }
     }
 

@@ -38,8 +38,9 @@ use tracing::{info, warn};
 
 use crate::repository::{
     SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
-    SqliteRelationRepository,
+    SqliteGroupRepository, SqliteRelationRepository,
 };
+use crate::service::group_service::GroupService;
 use crate::service::Services;
 
 /// Default max connections per instance pool.
@@ -259,6 +260,11 @@ impl TenantPoolManager {
             .execute(&pool)
             .await
             .context("Failed to run instance SQLite migrations")?;
+        let groups_sql = include_str!("../migrations/sqlite/002_groups.sql");
+        sqlx::raw_sql(groups_sql)
+            .execute(&pool)
+            .await
+            .context("Failed to run instance groups migrations (002_groups)")?;
 
         // Rebuild FTS index
         sqlx::raw_sql("INSERT INTO assets_fts(assets_fts) VALUES('rebuild');")
@@ -273,14 +279,24 @@ impl TenantPoolManager {
         let asset_repo = SqliteAssetRepository::new(pool.clone());
         let relation_repo = SqliteRelationRepository::new(pool.clone());
         let collection_repo = SqliteCollectionRepository::new(pool.clone());
-        let audit_repo = SqliteAuditRepository::new(pool);
+        let audit_repo = SqliteAuditRepository::new(pool.clone());
+        let group_repo = SqliteGroupRepository::new(pool);
 
-        Ok(Services::from_repositories(
+        let services = Services::from_repositories(
             asset_repo,
             relation_repo,
             collection_repo,
             audit_repo,
-        ))
+            group_repo,
+        );
+        // Backend-agnostic bootstrap: the distinguished instance-admins
+        // group exists in EVERY store (a9f91cfb) — the migration seeds it
+        // too; this covers every backend.
+        GroupService::ensure_instance_admins_group(&services)
+            .await
+            .context("Failed to ensure the instance-admins group")?;
+
+        Ok(services)
     }
 
     /// Register a new instance (pre-create its database).
@@ -527,12 +543,15 @@ mod tests {
                 .unwrap();
             let migration_sql = include_str!("../migrations/sqlite/001_initial.sql");
             sqlx::raw_sql(migration_sql).execute(&pool).await.unwrap();
+            let groups_sql = include_str!("../migrations/sqlite/002_groups.sql");
+            sqlx::raw_sql(groups_sql).execute(&pool).await.unwrap();
 
             let services = Services::from_repositories(
                 SqliteAssetRepository::new(pool.clone()),
                 SqliteRelationRepository::new(pool.clone()),
                 SqliteCollectionRepository::new(pool.clone()),
-                SqliteAuditRepository::new(pool),
+                SqliteAuditRepository::new(pool.clone()),
+                SqliteGroupRepository::new(pool),
             );
             TenantPoolManager::new(services, dir)
         }

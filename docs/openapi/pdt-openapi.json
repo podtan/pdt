@@ -931,6 +931,285 @@
         }
       }
     },
+    "/api/groups": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "List all groups in this instance.",
+        "operationId": "list_groups",
+        "responses": {
+          "200": {
+            "description": "Groups in this instance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Group"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Create a group.",
+        "operationId": "create_group",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Group created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Group"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty name"
+          },
+          "403": {
+            "description": "Requires platform admin or instance-admins membership"
+          },
+          "409": {
+            "description": "Group name already exists in this instance"
+          }
+        }
+      }
+    },
+    "/api/groups/member/{member_id}": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Resolve a principal's group NAMES at read time (the Phase 1b surface —\nnames, not IDs; the cedar evaluator merges these into effective_groups).",
+        "operationId": "resolve_member_groups",
+        "parameters": [
+          {
+            "name": "member_id",
+            "in": "path",
+            "description": "The principal's stable id (token sub / agent id)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The principal's group names",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberGroupsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/groups/{id}": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Get a group by id.",
+        "operationId": "get_group",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Group found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Group"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Group not found"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Delete a group (memberships cascade). The distinguished instance-admins\ngroup cannot be deleted.",
+        "operationId": "delete_group",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Group deleted"
+          },
+          "400": {
+            "description": "The distinguished instance-admins group cannot be deleted"
+          },
+          "403": {
+            "description": "Requires platform admin or instance-admins membership"
+          },
+          "404": {
+            "description": "Group not found"
+          }
+        }
+      }
+    },
+    "/api/groups/{id}/members": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "List a group's members.",
+        "operationId": "list_group_members",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Group members",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupMembersResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Group not found"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Add a member to a group (audited; idempotent on re-add).",
+        "operationId": "add_group_member",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddGroupMemberRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Member added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupMember"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requires platform admin or instance-admins membership"
+          },
+          "404": {
+            "description": "Group not found"
+          }
+        }
+      }
+    },
+    "/api/groups/{id}/members/{member_id}": {
+      "delete": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Remove a member from a group (audited).",
+        "operationId": "remove_group_member",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "member_id",
+            "in": "path",
+            "description": "The principal's stable id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Member removed"
+          },
+          "403": {
+            "description": "Requires platform admin or instance-admins membership"
+          }
+        }
+      }
+    },
     "/api/instances": {
       "get": {
         "tags": [
@@ -1367,6 +1646,19 @@
           }
         }
       },
+      "AddGroupMemberRequest": {
+        "type": "object",
+        "description": "Request body: add a member to a group.",
+        "required": [
+          "member_id"
+        ],
+        "properties": {
+          "member_id": {
+            "type": "string",
+            "description": "The principal's stable id (token sub / agent id)."
+          }
+        }
+      },
       "AddTagRequest": {
         "type": "object",
         "description": "Request to add a tag to an asset",
@@ -1466,7 +1758,10 @@
           "add_relation",
           "remove_relation",
           "add_to_collection",
-          "remove_from_collection"
+          "remove_from_collection",
+          "add_member",
+          "remove_member",
+          "admin_bypass"
         ]
       },
       "AuditEntry": {
@@ -1666,6 +1961,21 @@
           }
         }
       },
+      "CreateGroupRequest": {
+        "type": "object",
+        "description": "Request body: create a group.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "CreateRelationRequest": {
         "type": "object",
         "description": "Request to create a new relation",
@@ -1759,6 +2069,80 @@
           }
         }
       },
+      "Group": {
+        "type": "object",
+        "description": "A PDT-native group.",
+        "required": [
+          "_id",
+          "name",
+          "created_at",
+          "created_by"
+        ],
+        "properties": {
+          "_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "Canonical group name — bands reference THIS (membership resolves,\nnot string forms)."
+          }
+        }
+      },
+      "GroupMember": {
+        "type": "object",
+        "description": "A group membership row.",
+        "required": [
+          "group_id",
+          "member_id",
+          "added_by",
+          "added_at"
+        ],
+        "properties": {
+          "added_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "added_by": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "member_id": {
+            "type": "string",
+            "description": "The principal's stable id (token sub / agent id)."
+          }
+        }
+      },
+      "GroupMembersResponse": {
+        "type": "object",
+        "description": "Response: a group's members.",
+        "required": [
+          "group_id",
+          "members"
+        ],
+        "properties": {
+          "group_id": {
+            "type": "string"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GroupMember"
+            }
+          }
+        }
+      },
       "HealthResponse": {
         "type": "object",
         "description": "Health check response",
@@ -1803,6 +2187,25 @@
             "description": "Child instance IDs nested under this workspace (companies, agents)."
           },
           "workspace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "MemberGroupsResponse": {
+        "type": "object",
+        "description": "Response: the groups a principal belongs to (read-time resolution\nsurface — names, not IDs).",
+        "required": [
+          "member_id",
+          "groups"
+        ],
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "member_id": {
             "type": "string"
           }
         }
@@ -2416,6 +2819,10 @@
     {
       "name": "directory",
       "description": "Principal directory name-map (uuid → name/kind/email/role)"
+    },
+    {
+      "name": "groups",
+      "description": "PDT-native per-instance groups (authorization decoupled from Kanidm)"
     },
     {
       "name": "maintenance",

@@ -28,6 +28,9 @@ impl SqliteAuditRepository {
             "remove_relation" => AuditAction::RemoveRelation,
             "add_to_collection" => AuditAction::AddToCollection,
             "remove_from_collection" => AuditAction::RemoveFromCollection,
+            "add_member" => AuditAction::AddMember,
+            "remove_member" => AuditAction::RemoveMember,
+            "admin_bypass" => AuditAction::AdminBypass,
             _ => AuditAction::Update,
         }
     }

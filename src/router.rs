@@ -124,6 +124,28 @@ pub fn build_router(
         .route("/api/search", get(handlers::search::search))
         // Role model (1552c098) — sub-keyed resolution for the PEP authz path
         .route("/api/roles/{sub}", get(handlers::roles::get_roles))
+        // Groups (PDT-native per-instance groups, a9f91cfb — the authz
+        // decoupling from Kanidm; management surface for REST + MCP tools)
+        .route("/api/groups", post(handlers::group::create_group))
+        .route("/api/groups", get(handlers::group::list_groups))
+        .route("/api/groups/{id}", get(handlers::group::get_group))
+        .route("/api/groups/{id}", delete(handlers::group::delete_group))
+        .route(
+            "/api/groups/{id}/members",
+            post(handlers::group::add_group_member),
+        )
+        .route(
+            "/api/groups/{id}/members",
+            get(handlers::group::list_group_members),
+        )
+        .route(
+            "/api/groups/{id}/members/{member_id}",
+            delete(handlers::group::remove_group_member),
+        )
+        .route(
+            "/api/groups/member/{member_id}",
+            get(handlers::group::resolve_member_groups),
+        )
         // Directory name-map (4474a038) — uuid → {name, kind, email/role}
         .route("/api/directory", get(handlers::directory::list_directory))
         .route(

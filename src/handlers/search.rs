@@ -158,26 +158,45 @@ pub async fn search(
     Enrichment(enrichment): Enrichment,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<serde_json::Value>> {
-    // 365be03f: a degraded principal carries no authorization material; the
-    // Cedar visibility filter would drop every row and answer 200-with-empty
-    // — indistinguishable from genuine absence. Refuse before any query.
-    if enrichment == crate::auth::AuthEnrichment::Degraded {
+    // 365be03f: a degraded principal carries no TOKEN authorization material;
+    // the Cedar visibility filter would drop every row and answer
+    // 200-with-empty — indistinguishable from genuine absence. Refuse
+    // before any query. Phase 1b (147a17fc): the merge makes the transport
+    // failure harmless — a degraded TOKEN still carries PDT-native
+    // memberships, so Degraded only refuses when BOTH sources are empty
+    // (zero = zero, honestly).
+    let claims = crate::cedar::enforcement::extract_claims_for_cedar(&user);
+    let resolved = crate::cedar::enforcement::resolve_instance_authz(tx.services(), &claims).await;
+    if enrichment == crate::auth::AuthEnrichment::Degraded && resolved.effective_groups.is_empty() {
         return Err(ApiError::AuthDegraded);
     }
-    let claims = crate::cedar::enforcement::extract_claims_for_cedar(&user);
     let tag_filters = parse_tag_filters(&params);
 
     // Batched Cedar filter (eea5bcff): one eval per distinct band tuple
     // instead of one per row — a 904-row inbox was 904 Cedar evals per view.
-    let filter_visible = |assets: Vec<crate::models::Asset>| {
+    // Phase 1b: the resolved inputs (merged groups + admin bypass + audit)
+    // ride the async wrapper.
+    async fn filter_visible(
+        tx: &TenantState,
+        claims: &pep::oidc::types::JwtClaims,
+        resolved: &crate::cedar::enforcement::ResolvedAuthz,
+        assets: Vec<crate::models::Asset>,
+    ) -> crate::error::Result<Vec<crate::models::Asset>> {
         if let Some(authorizer) = tx.authorizer() {
-            crate::cedar::enforcement::filter_by_permission_batched(
-                authorizer, &claims, "View", assets,
+            crate::cedar::enforcement::filter_by_permission_batched_resolved(
+                tx.services(),
+                authorizer,
+                claims,
+                resolved,
+                tx.instance_id(),
+                "View",
+                assets,
             )
+            .await
         } else {
-            assets
+            Ok(assets)
         }
-    };
+    }
 
     if params.full_content {
         // Legacy behavior: full assets, content included in the page query.
@@ -194,7 +213,7 @@ pub async fn search(
         )
         .await?;
 
-        let visible_assets = filter_visible(assets);
+        let visible_assets = filter_visible(&tx, &claims, &resolved, assets).await?;
 
         Ok(Json(serde_json::to_value(PaginatedResponse {
             data: visible_assets,
@@ -219,7 +238,7 @@ pub async fn search(
         )
         .await?;
 
-        let visible_assets = filter_visible(assets);
+        let visible_assets = filter_visible(&tx, &claims, &resolved, assets).await?;
 
         // 3fd2d848: snippet=false skips the content fetch entirely —
         // callers that never render snippets stop paying one blob read per

@@ -180,6 +180,54 @@ pub trait CollectionRepository: Send + Sync {
     async fn remove_asset_from_all(&self, asset_id: &str) -> Result<()>;
 }
 
+/// Repository for group operations (workstream 69b4bb4c, task a9f91cfb —
+/// PDT-native per-instance groups). Groups live per-instance by
+/// construction: the store IS the instance.
+#[async_trait]
+pub trait GroupRepository: Send + Sync {
+    /// Create a group. Name is unique per instance store.
+    async fn create_group(
+        &self,
+        name: &str,
+        description: &str,
+        user_id: &str,
+    ) -> Result<crate::models::Group>;
+
+    /// Get a group by id.
+    async fn get_group(&self, id: &str) -> Result<crate::models::Group>;
+
+    /// Find a group by its canonical name.
+    async fn get_group_by_name(&self, name: &str) -> Result<Option<crate::models::Group>>;
+
+    /// List all groups in this instance store.
+    async fn list_groups(&self) -> Result<Vec<crate::models::Group>>;
+
+    /// Delete a group (its memberships cascade).
+    async fn delete_group(&self, id: &str) -> Result<()>;
+
+    /// Add a member (principal id) to a group.
+    async fn add_member(
+        &self,
+        group_id: &str,
+        member_id: &str,
+        user_id: &str,
+    ) -> Result<crate::models::GroupMember>;
+
+    /// Remove a member from a group.
+    async fn remove_member(&self, group_id: &str, member_id: &str) -> Result<()>;
+
+    /// List a group's members.
+    async fn list_members(&self, group_id: &str) -> Result<Vec<crate::models::GroupMember>>;
+
+    /// Resolve a principal's group NAMES at read time (Phase 1b: the
+    /// cedar evaluator merges these into effective_groups per request).
+    async fn memberships_for(&self, member_id: &str) -> Result<Vec<String>>;
+
+    /// Is the principal a member of the distinguished instance-admins
+    /// group (the admin bypass gate)? Fail-closed on absence.
+    async fn is_instance_admin(&self, member_id: &str) -> Result<bool>;
+}
+
 /// Repository for audit operations.
 #[async_trait]
 pub trait AuditRepository: Send + Sync {

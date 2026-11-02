@@ -19,6 +19,9 @@ pub enum AuditAction {
     RemoveRelation,
     AddToCollection,
     RemoveFromCollection,
+    AddMember,
+    RemoveMember,
+    AdminBypass,
 }
 
 impl std::fmt::Display for AuditAction {
@@ -33,6 +36,9 @@ impl std::fmt::Display for AuditAction {
             AuditAction::RemoveRelation => write!(f, "remove_relation"),
             AuditAction::AddToCollection => write!(f, "add_to_collection"),
             AuditAction::RemoveFromCollection => write!(f, "remove_from_collection"),
+            AuditAction::AddMember => write!(f, "add_member"),
+            AuditAction::RemoveMember => write!(f, "remove_member"),
+            AuditAction::AdminBypass => write!(f, "admin_bypass"),
         }
     }
 }

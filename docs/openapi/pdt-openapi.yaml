@@ -46,9 +46,12 @@ paths:
       parameters:
       - name: limit
         in: query
-        description: 'Page size. Server-side default: 20 (page 1 = the 20 newest by
+        description: 'Page size — server-side default: 20 (page 1 = the 20 newest
+          by
+
           sort order; follow next_cursor for more). Caller-controlled: no
-          server-side maximum (issue b040d645 (d)).'
+
+          server-side maximum. Documented in the spec (issue b040d645 (d)).'
         required: false
         schema:
           type: integer
@@ -627,6 +630,188 @@ paths:
                 $ref: '#/components/schemas/DirectoryEntry'
         '400':
           description: Empty uuid
+  /api/groups:
+    get:
+      tags:
+      - groups
+      summary: List all groups in this instance.
+      operationId: list_groups
+      responses:
+        '200':
+          description: Groups in this instance
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Group'
+    post:
+      tags:
+      - groups
+      summary: Create a group.
+      operationId: create_group
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGroupRequest'
+        required: true
+      responses:
+        '200':
+          description: Group created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+        '400':
+          description: Empty name
+        '403':
+          description: Requires platform admin or instance-admins membership
+        '409':
+          description: Group name already exists in this instance
+  /api/groups/member/{member_id}:
+    get:
+      tags:
+      - groups
+      summary: 'Resolve a principal''s group NAMES at read time (the Phase 1b surface
+        —
+
+        names, not IDs; the cedar evaluator merges these into effective_groups).'
+      operationId: resolve_member_groups
+      parameters:
+      - name: member_id
+        in: path
+        description: The principal's stable id (token sub / agent id)
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The principal's group names
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberGroupsResponse'
+  /api/groups/{id}:
+    get:
+      tags:
+      - groups
+      summary: Get a group by id.
+      operationId: get_group
+      parameters:
+      - name: id
+        in: path
+        description: Group ID
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Group found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Group'
+        '404':
+          description: Group not found
+    delete:
+      tags:
+      - groups
+      summary: 'Delete a group (memberships cascade). The distinguished instance-admins
+
+        group cannot be deleted.'
+      operationId: delete_group
+      parameters:
+      - name: id
+        in: path
+        description: Group ID
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Group deleted
+        '400':
+          description: The distinguished instance-admins group cannot be deleted
+        '403':
+          description: Requires platform admin or instance-admins membership
+        '404':
+          description: Group not found
+  /api/groups/{id}/members:
+    get:
+      tags:
+      - groups
+      summary: List a group's members.
+      operationId: list_group_members
+      parameters:
+      - name: id
+        in: path
+        description: Group ID
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Group members
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupMembersResponse'
+        '404':
+          description: Group not found
+    post:
+      tags:
+      - groups
+      summary: Add a member to a group (audited; idempotent on re-add).
+      operationId: add_group_member
+      parameters:
+      - name: id
+        in: path
+        description: Group ID
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddGroupMemberRequest'
+        required: true
+      responses:
+        '200':
+          description: Member added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupMember'
+        '403':
+          description: Requires platform admin or instance-admins membership
+        '404':
+          description: Group not found
+  /api/groups/{id}/members/{member_id}:
+    delete:
+      tags:
+      - groups
+      summary: Remove a member from a group (audited).
+      operationId: remove_group_member
+      parameters:
+      - name: id
+        in: path
+        description: Group ID
+        required: true
+        schema:
+          type: string
+      - name: member_id
+        in: path
+        description: The principal's stable id
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Member removed
+        '403':
+          description: Requires platform admin or instance-admins membership
   /api/instances:
     get:
       tags:
@@ -742,13 +927,7 @@ paths:
     post:
       tags:
       - maintenance
-      summary: Retention prune — class filter (tag category+value) + age window + dry-run mode.
-      description: |-
-        Admin-gated. dry_run=true reports the numbers only (zero writes, always
-        available). dry_run=false executes the soft-delete prune — REFUSED with
-        403 unless PDT_PRUNE_ENABLED is set (CPO ruling 8d591e85: first execution
-        gated on the CPO's sight of the dry-run numbers; removal is soft-delete
-        only — archive-over-delete hard line, recoverable at the store).
+      summary: Retention prune — class filter + age window + dry-run mode.
       operationId: prune
       requestBody:
         content:
@@ -760,7 +939,9 @@ paths:
         '200':
           description: Prune report (dry-run numbers or execution summary)
         '403':
-          description: Requires role=admin, or execution refused (PDT_PRUNE_ENABLED unset)
+          description: Requires role=admin (token claim or registry global_role);
+            execution refused when PDT_PRUNE_ENABLED unset, or the class is not policy-cleared
+            (archive-only class, window below policy, or class absent from PDT_PRUNE_POLICY_PATH)
   /api/relations:
     post:
       tags:
@@ -862,9 +1043,14 @@ paths:
       parameters:
       - name: limit
         in: query
-        description: 'Page size. Server-side default: 20 (page 1 = the 20 newest by
-          updated_at DESC; follow next_cursor for more). Caller-controlled: no
-          server-side maximum (issue b040d645 (d): the default was integrator-invisible).'
+        description: 'Page size — server-side default: 20 (page 1 = the 20 newest
+          by
+
+          updated_at DESC; follow next_cursor for more). Caller-controlled:
+
+          no server-side maximum. Documented in the spec (issue b040d645 (d):
+
+          the default was integrator-invisible).'
         required: false
         schema:
           type: integer
@@ -888,11 +1074,18 @@ paths:
           type: string
       - name: tags
         in: query
-        description: 'Multiple tag filters. Accepted wire forms (issues 12d3cb6a +
-          b040d645 (c)): a JSON-array string (tags=%5B%22type%3Adoc%22%2C%22scope%3Ax%22%5D
-          — the lossless form), a comma-separated string (tags=type:doc,scope:x),
-          or a true sequence. Note: serde_urlencoded (the Query backend) has no
-          sequence support — repeated params collapse to the first occurrence.'
+        description: 'Multiple tag filters. Every wire form is accepted (issues 12d3cb6a
+          +
+
+          b040d645 (c): serde_urlencoded has no sequence support — each value
+
+          arrives as ONE string, so `Vec<String>` 400''d on every form the
+
+          bridge emitted): a JSON-array string (the bridge''s lossless form,
+
+          `tags=%5B%22a%22%2C%22b%22%5D`), a comma-separated string (the `tag`
+
+          param''s documented convention, `tags=a,b`), or a true sequence.'
         required: false
         schema:
           type: array
@@ -906,14 +1099,25 @@ paths:
         required: false
         schema:
           type: boolean
+      - name: snippet
+        in: query
+        description: 'When false, SKIP the content-fetch phase entirely — compact
+          results
+
+          carry no snippet field (issue 3fd2d848: callers that never render
+
+          snippets — payam''s channel walks — were paying one content-blob read
+
+          per visible row on every search). Default: true (snippets fetched
+
+          for the visible page).'
+        required: false
+        schema:
+          type: boolean
       responses:
         '200':
-          description: 'Search results (compact SearchResult by default, full Asset
-            when full_content=true). total = all assets matching the filter in the
-            store (cursor-independent, before per-caller visibility filtering);
-            data = this page (issue b040d645 (b): total was previously never
-            populated — boards rendered page-local counts as if they were the
-            whole set).'
+          description: Search results (compact SearchResult by default, full Asset
+            when full_content=true)
         '503':
           description: 'Auth degraded — token claims could not be verified; body {error:
             auth_degraded, retryable: true}. Retry after re-authentication.'
@@ -940,6 +1144,15 @@ components:
       properties:
         asset_id:
           type: string
+    AddGroupMemberRequest:
+      type: object
+      description: 'Request body: add a member to a group.'
+      required:
+      - member_id
+      properties:
+        member_id:
+          type: string
+          description: The principal's stable id (token sub / agent id).
     AddTagRequest:
       type: object
       description: Request to add a tag to an asset
@@ -1015,6 +1228,9 @@ components:
       - remove_relation
       - add_to_collection
       - remove_from_collection
+      - add_member
+      - remove_member
+      - admin_bypass
     AuditEntry:
       type: object
       description: Audit log entry
@@ -1117,31 +1333,6 @@ components:
           format: date-time
         updated_by:
           type: string
-    PruneRequest:
-      type: object
-      description: |-
-        Retention prune request — the policy lives in DATA (the retention policy
-        asset supplies these values at invocation time); the endpoint encodes
-        only the mechanics (data must not leak into code).
-      required:
-      - tag_category
-      - tag_value
-      - older_than_days
-      - dry_run
-      properties:
-        tag_category:
-          type: string
-          description: Tag CATEGORY to match (e.g. "type").
-        tag_value:
-          type: string
-          description: Tag VALUE to match (e.g. "report").
-        older_than_days:
-          type: integer
-          format: int32
-          description: Age window in days — assets whose created_at is older are candidates.
-        dry_run:
-          type: boolean
-          description: 'true = report the numbers only (zero writes). false = execute the soft-delete prune — REFUSED unless PDT_PRUNE_ENABLED is set.'
     CreateAssetRequest:
       type: object
       description: 'Request to create a new asset
@@ -1194,6 +1385,16 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AddTagRequest'
+    CreateGroupRequest:
+      type: object
+      description: 'Request body: create a group.'
+      required:
+      - name
+      properties:
+        description:
+          type: string
+        name:
+          type: string
     CreateRelationRequest:
       type: object
       description: Request to create a new relation
@@ -1261,6 +1462,61 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Relation'
+    Group:
+      type: object
+      description: A PDT-native group.
+      required:
+      - _id
+      - name
+      - created_at
+      - created_by
+      properties:
+        _id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        created_by:
+          type: string
+        description:
+          type: string
+        name:
+          type: string
+          description: 'Canonical group name — bands reference THIS (membership resolves,
+
+            not string forms).'
+    GroupMember:
+      type: object
+      description: A group membership row.
+      required:
+      - group_id
+      - member_id
+      - added_by
+      - added_at
+      properties:
+        added_at:
+          type: string
+          format: date-time
+        added_by:
+          type: string
+        group_id:
+          type: string
+        member_id:
+          type: string
+          description: The principal's stable id (token sub / agent id).
+    GroupMembersResponse:
+      type: object
+      description: 'Response: a group''s members.'
+      required:
+      - group_id
+      - members
+      properties:
+        group_id:
+          type: string
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroupMember'
     HealthResponse:
       type: object
       description: Health check response
@@ -1294,6 +1550,21 @@ components:
           description: Child instance IDs nested under this workspace (companies,
             agents).
         workspace_id:
+          type: string
+    MemberGroupsResponse:
+      type: object
+      description: 'Response: the groups a principal belongs to (read-time resolution
+
+        surface — names, not IDs).'
+      required:
+      - member_id
+      - groups
+      properties:
+        groups:
+          type: array
+          items:
+            type: string
+        member_id:
           type: string
     MembershipRoleRow:
       type: object
@@ -1492,6 +1763,39 @@ components:
           type: string
         status:
           type: string
+    PruneRequest:
+      type: object
+      description: 'Retention prune request — the policy lives in DATA (the retention
+        policy
+
+        asset supplies these values at invocation time); the endpoint encodes
+
+        only the mechanics (data must not leak into code).'
+      required:
+      - tag_category
+      - tag_value
+      - older_than_days
+      - dry_run
+      properties:
+        dry_run:
+          type: boolean
+          description: 'true = report the numbers only (zero writes). false = execute
+            the
+
+            soft-delete prune — REFUSED unless PDT_PRUNE_ENABLED is set AND the
+
+            class is policy-cleared (PDT_PRUNE_POLICY_PATH).'
+        older_than_days:
+          type: integer
+          format: int32
+          description: Age window in days — assets whose created_at is older are candidates.
+          minimum: 0
+        tag_category:
+          type: string
+          description: Tag CATEGORY to match (e.g. "type").
+        tag_value:
+          type: string
+          description: Tag VALUE to match (e.g. "report").
     Relation:
       type: object
       description: Relationship between two assets
@@ -1752,8 +2056,11 @@ tags:
   description: Sub-keyed role resolution (membership + global)
 - name: directory
   description: Principal directory name-map (uuid → name/kind/email/role)
+- name: groups
+  description: PDT-native per-instance groups (authorization decoupled from Kanidm)
 - name: maintenance
-  description: Admin-gated idempotent backfills
+  description: Admin-gated idempotent backfills + retention prune (dry-run default,
+    execution wire-gated)
 - name: audit
   description: Audit logging and history
 - name: cedar

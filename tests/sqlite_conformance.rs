@@ -33,23 +33,30 @@ async fn setup_sqlite() -> SqlitePool {
         .execute(&pool)
         .await
         .expect("failed to run migrations");
+    let groups_sql = include_str!("../migrations/sqlite/002_groups.sql");
+    sqlx::raw_sql(groups_sql)
+        .execute(&pool)
+        .await
+        .expect("failed to run groups migrations");
 
     pool
 }
 
-/// Set up all 4 SQLite repositories backed by a single in-memory database.
+/// Set up all 5 SQLite repositories backed by a single in-memory database.
 async fn setup_repos() -> (
     SqliteAssetRepository,
     SqliteRelationRepository,
     SqliteCollectionRepository,
     SqliteAuditRepository,
+    SqliteGroupRepository,
 ) {
     let pool = setup_sqlite().await;
     (
         SqliteAssetRepository::new(pool.clone()),
         SqliteRelationRepository::new(pool.clone()),
         SqliteCollectionRepository::new(pool.clone()),
-        SqliteAuditRepository::new(pool),
+        SqliteAuditRepository::new(pool.clone()),
+        SqliteGroupRepository::new(pool),
     )
 }
 
@@ -463,8 +470,8 @@ use pdt::service::AssetService;
 use pdt::service::Services;
 
 async fn setup_services() -> Services {
-    let (assets, relations, collections, audit) = setup_repos().await;
-    Services::from_repositories(assets, relations, collections, audit)
+    let (assets, relations, collections, audit, groups) = setup_repos().await;
+    Services::from_repositories(assets, relations, collections, audit, groups)
 }
 
 #[tokio::test]
@@ -597,6 +604,7 @@ async fn prune_age_filter_matches_only_older_than_window() {
         SqliteRelationRepository::new(pool.clone()),
         SqliteCollectionRepository::new(pool.clone()),
         SqliteAuditRepository::new(pool.clone()),
+        SqliteGroupRepository::new(pool.clone()),
     );
     let user = "test-user";
     let old = AssetService::create(

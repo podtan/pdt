@@ -5,6 +5,56 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.25] — 2026-11-02
+
+### Added — PDT-native per-instance groups + cedar merge (workstream 69b4bb4c, tasks a9f91cfb + 147a17fc; owner directive 2026-11-02 relayed by Farzan)
+
+- **Phase 1a (a9f91cfb)**: per-INSTANCE groups — `groups` + `group_members`
+  tables in every instance store (migration `002_groups.sql`, idempotent,
+  applied at every boot) + a distinguished `instance-admins` group seeded in
+  every store (stable id `00000000-0000-0000-0000-0000000000a1`; the name is
+  reserved at create; deletion refused). Management via REST
+  (`/api/groups` — create/list/get/delete + members add/remove/list + the
+  read-time resolve surface `/api/groups/member/{member_id}`), instant and
+  audited in `audit_entries` (`add_member` / `remove_member` actions). No
+  GitOps, no Kanidm admin token. Backend-agnostic: the `GroupRepository`
+  trait (sqlite + mongo implementations; postgres later = one new impl + a
+  backend arm + a dialect migration file), and a backend-agnostic
+  `ensure_instance_admins_group` bootstrap at every store open.
+- **Phase 1b (147a17fc)**: the cedar evaluator MERGES —
+  `effective_groups = pep-fetched Kanidm groups ∪ PDT-native groups`
+  (resolved at read time by principal id from the new tables). Union
+  semantics: a failure in either source degrades to the other, never to
+  zero. Admin bypass: a principal in the instance-admins group sees all
+  assets within that instance, AUDITED (`admin_bypass` entries; a failed
+  audit write denies — an unaudited bypass is a silent widening). Band
+  matching resolves MEMBERSHIP, not string forms — bands store group
+  names; the SPN-vs-UUID band-form mismatch class dies.
+- **365be03f interplay**: a degraded TOKEN (enrichment landed empty) no
+  longer refuses filtered reads when PDT-native memberships resolve —
+  Degraded answers 503 only when BOTH sources are empty (zero = zero,
+  honestly).
+
+### Why
+
+The live casualty (defect 40ccddef): mehrdad.haddad saw "No assets found"
+on the Eynak PDT view while the store + bands were healthy — the failure
+was in the token-claim transport (pep enrichment / mint staleness / mint
+gaps / the JWKS single-key rotation treadmill 8141eda7). The merge makes
+that failure mode harmless the moment PDT-native groups carry real
+memberships. The visibility model itself is owner-ratified and stays:
+visibility=team + user in the group band → visible; admin group → see all.
+We are fixing the transport, not the model.
+
+### Regression pins (the CLASS — release checklist v3)
+
+7 new tests (`native_groups_merge_tests`): read-time resolution without
+token groups · union semantics (both sources, either-source bands) · admin
+bypass sees-all + audited · names-not-IDs (UUID-form AND SPN-form member
+ids match a name-form band) · no-widening (no membership still denied) ·
+the distinguished group seeded + protected · instance-admins manage
+groups.
+
 ## [0.3.7] - 2026-10-11
 
 ### Changed

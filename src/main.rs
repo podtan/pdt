@@ -10,7 +10,8 @@ use pdt::auth::middleware::AuthLayer;
 use pdt::config::{Config, DatabaseBackend};
 use pdt::db::Database;
 use pdt::repository::{
-    MongoAssetRepository, MongoAuditRepository, MongoCollectionRepository, MongoRelationRepository,
+    MongoAssetRepository, MongoAuditRepository, MongoCollectionRepository, MongoGroupRepository,
+    MongoRelationRepository,
 };
 use pdt::router::build_router;
 use pdt::service::Services;
@@ -19,7 +20,7 @@ use pdt::tenant::TenantPoolManager;
 #[cfg(feature = "sqlite-backend")]
 use pdt::repository::{
     SqliteAssetRepository, SqliteAuditRepository, SqliteCollectionRepository,
-    SqliteRelationRepository,
+    SqliteGroupRepository, SqliteRelationRepository,
 };
 
 #[tokio::main]
@@ -55,9 +56,16 @@ async fn main() -> anyhow::Result<()> {
             let asset_repo = MongoAssetRepository::new(db.clone());
             let relation_repo = MongoRelationRepository::new(db.clone());
             let collection_repo = MongoCollectionRepository::new(db.clone());
-            let audit_repo = MongoAuditRepository::new(db);
+            let audit_repo = MongoAuditRepository::new(db.clone());
+            let group_repo = MongoGroupRepository::new(db);
 
-            Services::from_repositories(asset_repo, relation_repo, collection_repo, audit_repo)
+            Services::from_repositories(
+                asset_repo,
+                relation_repo,
+                collection_repo,
+                audit_repo,
+                group_repo,
+            )
         }
         #[cfg(feature = "sqlite-backend")]
         DatabaseBackend::Sqlite => {
@@ -82,6 +90,11 @@ async fn main() -> anyhow::Result<()> {
                 .execute(&pool)
                 .await
                 .context("Failed to run SQLite migrations")?;
+            let groups_sql = include_str!("../migrations/sqlite/002_groups.sql");
+            sqlx::raw_sql(groups_sql)
+                .execute(&pool)
+                .await
+                .context("Failed to run groups migrations (002_groups)")?;
             tracing::info!("SQLite migrations applied");
 
             // Rebuild FTS index for any pre-existing data (e.g. from migration script)
@@ -95,11 +108,25 @@ async fn main() -> anyhow::Result<()> {
             let asset_repo = SqliteAssetRepository::new(pool.clone());
             let relation_repo = SqliteRelationRepository::new(pool.clone());
             let collection_repo = SqliteCollectionRepository::new(pool.clone());
-            let audit_repo = SqliteAuditRepository::new(pool);
+            let audit_repo = SqliteAuditRepository::new(pool.clone());
+            let group_repo = SqliteGroupRepository::new(pool);
 
-            Services::from_repositories(asset_repo, relation_repo, collection_repo, audit_repo)
+            Services::from_repositories(
+                asset_repo,
+                relation_repo,
+                collection_repo,
+                audit_repo,
+                group_repo,
+            )
         }
     };
+
+    // Backend-agnostic bootstrap: the distinguished instance-admins group
+    // exists in EVERY store (workstream 69b4bb4c, a9f91cfb) — the sqlite
+    // migration seeds it too; this covers every backend.
+    pdt::service::group_service::GroupService::ensure_instance_admins_group(&services)
+        .await
+        .context("Failed to ensure the instance-admins group")?;
 
     // Initialize Cedar authorization (optional — gracefully disabled when CEDAR_ENABLED=false)
     let authorizer = if config.cedar.enabled {
