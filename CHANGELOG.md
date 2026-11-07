@@ -5,6 +5,45 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.29] — 2026-11-07
+
+### Added — audit-entries retention prune, ARCHIVE-THEN-DELETE (issue 2c71e4e6, owner-directed)
+
+- `POST /api/maintenance/audit-prune {older_than_days, dry_run}`: the
+  missing lifecycle leg for the `audit_entries` TABLE (INSERT-only since
+  inception; the THQ leaf band a4613285 grew to 1.88M rows / 2.07G — the
+  namespace's 2G lever). The existing asset prune (soft-delete via
+  `AssetService::delete`) cannot touch the table — an audit entry is not
+  an asset.
+- ARCHIVE-THEN-DELETE, not soft-delete: `dry_run=false` exports EVERY
+  candidate row to a dated JSONL archive
+  (`{band dir}/audit-archive-<ts>.jsonl`, the archive lives next to the
+  store it documents; `PDT_AUDIT_ARCHIVE_DIR` overrides) and fsyncs it
+  BEFORE any delete; the delete is REFUSED unless archived == candidates
+  (a partial archive is removed, never kept, never trusted); post-delete
+  count must be 0; the prune itself rides ONE audit entry (action=delete,
+  entity_type=audit_entries) carrying the archive path + counts.
+- `dry_run=true`: the numbers only — candidates count + 10-row sample +
+  the planned archive home + the policy verdict. Zero writes, zero audits.
+- Policy wiring: the audit-entries class is a DEDICATED
+  `PDT_PRUNE_POLICY_PATH` section —
+  `{"audit_entries": {"window_days": 90, "disposition": "archive_then_delete"}}`.
+  Absent section, disposition `archive`/`soft_delete`, or window below
+  policy = 403 (fail-closed). `Disposition` gained `ArchiveThenDelete`;
+  the asset-prune evaluator refuses it explicitly (the asset prune stays
+  soft-delete-only).
+- Gates: same fail-closed set as the asset prune — admin (token role
+  claim or registry global_role), `PDT_PRUNE_ENABLED` default-OFF wire
+  gate, policy-cleared window. Dry-run always answers. Execution stays
+  disabled until the CPO/owner sight the dry-run numbers (ruling
+  8d591e85).
+- Repository: `AuditRepository` grew `count_before` / `list_before` /
+  `delete_before` (sqlite + mongo). The archive walk paginates on the
+  unique id PK ASC — exact, no skips/duplicates.
+- Tests: 6 policy tests + the end-to-end IT (`tests/audit_prune_it.rs`):
+  gate default-off, policy absent, below-window refused, dry-run
+  zero-writes, archive-then-delete verify, no-silent-delete pin.
+
 ## [0.3.28] — 2026-11-02
 
 ### Added — the DESIGNED seed mechanism for instance-admins (CPO ruling on defect c0c606c6, option (b))
