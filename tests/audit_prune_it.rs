@@ -32,6 +32,7 @@ use pdt::router::build_router;
 use pdt::service::Services;
 use pdt::tenant::TenantPoolManager;
 use pep::oidc_resource_server::ResourceServerClient;
+use sqlx::Row;
 use tower::ServiceExt;
 
 async fn sqlite_services() -> Services {
@@ -103,6 +104,19 @@ async fn seed_audit_entries(db_path: &PathBuf, old_count: usize, fresh_count: us
     pool.close().await;
 }
 
+/// Count archive files in a band directory (the no-archive assertions).
+fn archive_file_count(band_dir: &std::path::Path) -> usize {
+    std::fs::read_dir(band_dir)
+        .unwrap_or_else(|e| panic!("band dir reads: {e}"))
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("audit-archive-")
+        })
+        .count()
+}
+
 async fn count_rows(db_path: &PathBuf) -> i64 {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -150,6 +164,102 @@ async fn post_audit_prune(
         .expect("body");
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, json)
+}
+
+/// PLANNER PIN (the >120s band-class hang, issue 2c71e4e6 — the CPO
+/// finding): the dry-run sample and the candidate count MUST be
+/// index-driven. The id-ordered sample shape (`ORDER BY id ASC`) full-scans
+/// the table when the cutoff matches few/zero rows — on the 1.9M-row band
+/// that scan IS the hang (measured: 2.27s on a fast box for one scan;
+/// minutes on the oversubscribed prod box). The planner choice is the
+/// defect, so the PLAN is the assertion: EXPLAIN QUERY PLAN must show the
+/// timestamp index and must NOT show a bare table SCAN for either query.
+#[tokio::test]
+async fn audit_prune_sample_and_count_are_index_driven() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("in-memory SQLite");
+    let migration_sql = include_str!("../migrations/sqlite/001_initial.sql");
+    sqlx::raw_sql(migration_sql)
+        .execute(&pool)
+        .await
+        .expect("migrations");
+
+    // A few backdated rows — the PLAN is the assertion, not the volume.
+    for i in 0..5 {
+        sqlx::query(
+            "INSERT INTO audit_entries (id, entity_type, entity_id, action, changes_json, user_id, timestamp)
+             VALUES (?, 'asset', ?, 'update', '{}', 'seed', ?)",
+        )
+        .bind(format!("00000000-0000-4000-8000-{:012}", i))
+        .bind(format!("entity-{i}"))
+        .bind((chrono::Utc::now() - chrono::Duration::days(400)).to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("seed row inserts");
+    }
+
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(365)).to_rfc3339();
+
+    // The SAMPLE query (sample_before's shape): index-driven, never a bare
+    // table scan.
+    let rows = sqlx::query(
+        "EXPLAIN QUERY PLAN SELECT id, entity_type, entity_id, action, changes_json, user_id, timestamp
+         FROM audit_entries WHERE timestamp < ? ORDER BY timestamp DESC LIMIT ?",
+    )
+    .bind(&cutoff)
+    .bind(10i64)
+    .fetch_all(&pool)
+    .await
+    .expect("explain sample");
+    let plan: String = rows
+        .iter()
+        .map(|r| {
+            r.try_get::<String, _>("detail")
+                .unwrap_or_else(|_| String::new())
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        plan.contains("idx_audit_timestamp"),
+        "sample query must use the timestamp index, plan: {plan}"
+    );
+    assert!(
+        !plan.contains("SCAN audit_entries"),
+        "sample query must NOT full-scan the table (the hang class), plan: {plan}"
+    );
+
+    // The COUNT query (count_before's shape): the covering index.
+    let rows =
+        sqlx::query("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM audit_entries WHERE timestamp < ?")
+            .bind(&cutoff)
+            .fetch_all(&pool)
+            .await
+            .expect("explain count");
+    let plan: String = rows
+        .iter()
+        .map(|r| {
+            r.try_get::<String, _>("detail")
+                .unwrap_or_else(|_| String::new())
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        plan.contains("idx_audit_timestamp"),
+        "count query must use the timestamp index, plan: {plan}"
+    );
+    assert!(
+        !plan.contains("SCAN audit_entries"),
+        "count query must NOT full-scan the table, plan: {plan}"
+    );
+
+    pool.close().await;
 }
 
 #[tokio::test]
@@ -267,6 +377,21 @@ async fn audit_prune_end_to_end_gates_dry_run_and_archive_then_delete() {
         body["archive_dir"].is_string(),
         "dry-run shows the planned archive home: {body}"
     );
+    // The sample rides timestamp-DESC (newest candidates first) — the
+    // sample_before contract.
+    let sample = body["sample"].as_array().expect("sample array");
+    assert_eq!(sample.len(), 10, "sample is capped at 10: {body}");
+    let timestamps: Vec<&str> = sample
+        .iter()
+        .map(|s| s["timestamp"].as_str().expect("sample timestamp"))
+        .collect();
+    let mut sorted = timestamps.clone();
+    sorted.sort();
+    sorted.reverse();
+    assert_eq!(
+        timestamps, sorted,
+        "sample is newest-first (timestamp-DESC): {body}"
+    );
     let archives: Vec<_> = std::fs::read_dir(dir.join(&workspace).join(&band))
         .expect("band dir")
         .filter_map(|e| e.ok())
@@ -328,6 +453,56 @@ async fn audit_prune_end_to_end_gates_dry_run_and_archive_then_delete() {
     assert!(
         archive_path.exists(),
         "the archive file persists as the record after the delete"
+    );
+
+    // ---- Phase 7: 0-MATCH DRY-RUN NO-OP (the >120s band-class hang) ----
+    // A window beyond the band's birth matches ZERO rows. The pre-fix shape
+    // full-scanned the table here (the id-ordered sample over a 1.9M-row
+    // band — the hang); the no-op short-circuit answers the zero report
+    // without touching the walk or the sample query.
+    let (status, body) = post_audit_prune(app.clone(), &band, 4000, true).await;
+    assert_eq!(status, StatusCode::OK, "0-match dry-run answers: {body}");
+    assert_eq!(
+        body["candidates"],
+        serde_json::Value::from(0),
+        "a window beyond the band's birth matches nothing: {body}"
+    );
+    assert_eq!(
+        body["noop"],
+        serde_json::Value::Bool(true),
+        "0-match dry-run is a marked no-op: {body}"
+    );
+    assert_eq!(
+        body["sample"],
+        serde_json::Value::Array(Vec::new()),
+        "0-match sample is empty: {body}"
+    );
+    assert_eq!(
+        count_rows(&band_db).await,
+        6,
+        "no-op dry-run writes nothing"
+    );
+
+    // ---- Phase 8: 0-MATCH EXECUTION NO-OP (no archive, no delete) ----
+    let archives_before = archive_file_count(&dir.join(&workspace).join(&band));
+    let (status, body) = post_audit_prune(app.clone(), &band, 4000, false).await;
+    assert_eq!(status, StatusCode::OK, "0-match execution answers: {body}");
+    assert_eq!(
+        body["noop"],
+        serde_json::Value::Bool(true),
+        "0-match execution is a marked no-op: {body}"
+    );
+    assert_eq!(body["archived"], serde_json::Value::from(0));
+    assert_eq!(body["deleted"], serde_json::Value::from(0));
+    assert_eq!(
+        archive_file_count(&dir.join(&workspace).join(&band)),
+        archives_before,
+        "a 0-match execution must not create an archive file"
+    );
+    assert_eq!(
+        count_rows(&band_db).await,
+        6,
+        "0-match execution deletes nothing (and writes no audit entry)"
     );
 
     // ---- Cleanup: env + temp dir ----

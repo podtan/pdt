@@ -74,11 +74,53 @@ impl AuditService {
         let cutoff = Utc::now() - chrono::Duration::days(older_than_days as i64);
         let candidates = services.audit().count_before(cutoff).await?;
 
+        // NO-OP SHORT-CIRCUIT (the >120s band-class hang, issue 2c71e4e6):
+        // zero candidates means zero work — the dry-run answers the zero
+        // report and the execution returns without the archive walk, the
+        // delete, or an audit entry (nothing to archive, nothing to delete,
+        // no silent deletes). The count itself is index-driven; skipping the
+        // walk here keeps a 0-match window from scanning the table at all.
+        if candidates == 0 {
+            // Shape-uniform with the non-noop reports: the dry-run report
+            // carries the (empty) sample; the execution report carries the
+            // archive/delete counters (all zero — nothing to do).
+            let mut noop = serde_json::Map::new();
+            noop.insert("dry_run".to_string(), serde_json::Value::Bool(dry_run));
+            noop.insert("candidates".to_string(), serde_json::Value::from(0));
+            noop.insert("noop".to_string(), serde_json::Value::Bool(true));
+            noop.insert(
+                "older_than_days".to_string(),
+                serde_json::Value::from(older_than_days),
+            );
+            noop.insert(
+                "cutoff".to_string(),
+                serde_json::Value::String(cutoff.to_rfc3339()),
+            );
+            noop.insert(
+                "archive_dir".to_string(),
+                archive_dir
+                    .map(|d| serde_json::Value::String(d.to_string_lossy().to_string()))
+                    .unwrap_or(serde_json::Value::Null),
+            );
+            if dry_run {
+                noop.insert("sample".to_string(), serde_json::Value::Array(Vec::new()));
+            } else {
+                noop.insert("archived".to_string(), serde_json::Value::from(0));
+                noop.insert("deleted".to_string(), serde_json::Value::from(0));
+                noop.insert("post_count".to_string(), serde_json::Value::from(0));
+                noop.insert("verified".to_string(), serde_json::Value::Bool(true));
+            }
+            return Ok(serde_json::Value::Object(noop));
+        }
+
         if dry_run {
             // Dry-run: the numbers only. Zero writes, zero audits. A sample
             // of the newest candidates rides the report (the CPO sight reads
-            // what WOULD be archived, not just how many).
-            let (sample, _) = services.audit().list_before(cutoff, 10, None).await?;
+            // what WOULD be archived, not just how many) — timestamp-DESC via
+            // sample_before, index-driven for ANY match count (the id-ordered
+            // shape full-scans the table when the cutoff matches few/zero
+            // rows — the >120s band-class hang).
+            let sample = services.audit().sample_before(cutoff, 10).await?;
             let listed: Vec<serde_json::Value> = sample
                 .iter()
                 .map(|e| {

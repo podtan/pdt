@@ -290,6 +290,20 @@ pub trait AuditRepository: Send + Sync {
     /// count (issue 2c71e4e6: the audit-entries retention verb).
     async fn count_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<i64>;
 
+    /// Sample of the newest audit entries older than the cutoff — the
+    /// audit-prune DRY-RUN report's sample (issue 2c71e4e6). Timestamp-DESC
+    /// order ON PURPOSE: the sample rides the timestamp index (a plain
+    /// index-ordered read, bounded by LIMIT for ANY match count), where the
+    /// id-ordered shape full-scans the table when the cutoff matches few or
+    /// zero rows (the >120s band-class hang). This is a REPORT, not the
+    /// archive walk — the id-ASC exactness contract belongs to `list_before`
+    /// alone.
+    async fn sample_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> Result<Vec<AuditEntry>>;
+
     /// List audit entries older than the cutoff, cursor-paginated — the
     /// archive walk. ORDER-AGNOSTIC by design: pagination is keyed on the
     /// unique `id` PK (`id > cursor`, ascending) so the walk is exact (no

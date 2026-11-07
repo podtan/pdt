@@ -5,6 +5,40 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.30] — 2026-11-07
+
+### Fixed — the >120s audit-prune hang on band-class volume (issue 2c71e4e6, CPO finding)
+
+- ROOT CAUSE (planner-verified): the dry-run's sample query rode the
+  id-ordered shape (`WHERE timestamp < ? ORDER BY id ASC LIMIT 10`) — a
+  shape the sqlite planner resolves as a FULL TABLE SCAN when the cutoff
+  matches few/zero rows (measured on a 1.9M-row fixture: 2.27s per scan on
+  a fast box; minutes on the oversubscribed prod box — the >120s hang).
+  The candidate count was already index-driven (`idx_audit_timestamp`,
+  covering); the sample was the unbounded leg.
+- FIX 1 — `sample_before` (new repo method, sqlite + mongo): the dry-run
+  sample reads `ORDER BY timestamp DESC` — index-driven, bounded by LIMIT
+  for ANY match count. The sample is a report (newest candidates first),
+  not the archive walk; the id-ASC exactness contract stays with
+  `list_before` alone.
+- FIX 2 — 0-match short-circuit: `candidates == 0` returns the zero report
+  immediately (dry-run AND execution) — no sample query, no archive walk,
+  no delete, no audit entry. A window beyond the band's birth can no
+  longer scan the table at all.
+- PLANNER PIN (the guard): `audit_prune_sample_and_count_are_index_driven`
+  asserts EXPLAIN QUERY PLAN uses `idx_audit_timestamp` and NEVER a bare
+  `SCAN audit_entries` for the sample and count shapes — the planner
+  choice is the defect, so the plan is the assertion.
+- IT extended: 0-match dry-run + execution no-op phases (no archive file,
+  rows intact, no audit entry); the dry-run sample pinned newest-first.
+- Verified at band-class volume on the real binary: 0-match dry-run
+  0.00s; 1.2M-candidate dry-run 0.04s; 1.2M-row execution 47s with
+  archived == candidates == deleted, post_count 0, the archive line count
+  exact, and the prune's own audit entry correct. The db file size does
+  not shrink on DELETE (the CPO's acceptance-4 disk datum: VACUUM is the
+  reclaim step — operator procedure, never in-request: an in-request
+  VACUUM holds the write lock for minutes = the band's writes block).
+
 ## [0.3.29] — 2026-11-07
 
 ### Added — audit-entries retention prune, ARCHIVE-THEN-DELETE (issue 2c71e4e6, owner-directed)

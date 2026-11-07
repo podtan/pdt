@@ -257,6 +257,46 @@ impl AuditRepository for SqliteAuditRepository {
         Ok((entries, next_cursor))
     }
 
+    async fn sample_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> Result<Vec<AuditEntry>> {
+        // Timestamp-DESC, index-driven: idx_audit_timestamp serves the range
+        // scan, so the read is bounded by LIMIT for ANY match count — the
+        // id-ordered shape (ORDER BY id) full-scans the table when the cutoff
+        // matches few/zero rows (the >120s band-class hang, issue 2c71e4e6).
+        // The uniform +00:00 offset makes lexical comparison chronological
+        // (the same assumption count_before makes).
+        let cutoff_str = cutoff.to_rfc3339();
+        let rows = sqlx::query_as::<_, AuditRow>(
+            "SELECT id, entity_type, entity_id, action, changes_json, user_id, timestamp
+             FROM audit_entries WHERE timestamp < ?
+             ORDER BY timestamp DESC LIMIT ?",
+        )
+        .bind(&cutoff_str)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let entries = rows
+            .into_iter()
+            .map(|r| AuditEntry {
+                id: r.id,
+                entity_type: r.entity_type,
+                entity_id: r.entity_id,
+                action: SqliteAuditRepository::parse_action(&r.action),
+                changes: serde_json::from_str(&r.changes_json).unwrap_or_default(),
+                user_id: r.user_id,
+                timestamp: chrono::DateTime::parse_from_rfc3339(&r.timestamp)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            })
+            .collect();
+
+        Ok(entries)
+    }
+
     async fn delete_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<u64> {
         let cutoff_str = cutoff.to_rfc3339();
         let result = sqlx::query("DELETE FROM audit_entries WHERE timestamp < ?")

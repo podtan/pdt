@@ -160,6 +160,30 @@ impl AuditRepository for MongoAuditRepository {
         Ok((entries, next_cursor))
     }
 
+    async fn sample_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> Result<Vec<AuditEntry>> {
+        // Newest-first sample for the dry-run report (see the trait doc):
+        // timestamp-DESC, bounded by LIMIT — the id-ordered shape full-scans
+        // when the cutoff matches few/zero rows.
+        let filter = doc! { "timestamp": { "$lt": bson::DateTime::from(cutoff) } };
+        let options = mongodb::options::FindOptions::builder()
+            .sort(doc! { "timestamp": -1, "_id": -1 })
+            .limit(limit)
+            .build();
+
+        let mut cur = self.db.audit().find(filter).with_options(options).await?;
+        let mut entries = Vec::new();
+
+        while let Some(entry) = cur.try_next().await? {
+            entries.push(entry);
+        }
+
+        Ok(entries)
+    }
+
     async fn delete_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<u64> {
         let filter = doc! { "timestamp": { "$lt": bson::DateTime::from(cutoff) } };
         let result = self.db.audit().delete_many(filter).await?;
