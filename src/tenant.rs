@@ -133,6 +133,18 @@ pub struct TenantPoolManager {
     /// store's instance-admins group (CPO ruling on defect c0c606c6,
     /// option (b) — the DESIGNED seed mechanism). Empty = no seed.
     seed_instance_admins: Vec<String>,
+    /// In-flight instance opens, keyed by instance UUID — the singleflight
+    /// guard (the 002_groups restart 500-window, paydar's 2026-11-07
+    /// sighting, 2nd instance of the class): concurrent first-touches of
+    /// one store each ran the migration replay + FTS rebuild, and the
+    /// loser's 002_groups write hit the winner's write lock and died at
+    /// the ~5s busy_timeout (3×500 @ ~5.05s per restart window,
+    /// self-healing when the rebuilds finished). With the guard,
+    /// concurrent first-touches await the SAME open and re-check the cache
+    /// when it lands — the 500-window becomes a wait, never an error.
+    /// Entries are left in place (bounded by the store count, ~tens) — no
+    /// cleanup race.
+    inflight: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl TenantPoolManager {
@@ -147,6 +159,7 @@ impl TenantPoolManager {
             instances: Arc::new(RwLock::new(HashMap::new())),
             instances_dir,
             seed_instance_admins,
+            inflight: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -172,6 +185,28 @@ impl TenantPoolManager {
         }
 
         validate_uuid(instance_id)?;
+
+        // Singleflight: one open per instance at a time (the 002_groups
+        // restart 500-window — concurrent first-touches raced the migration
+        // replay + FTS rebuild; the loser's write died at the ~5s
+        // busy_timeout). Late arrivals await the same lock and re-check the
+        // cache when the winner lands.
+        let open_lock = {
+            let mut inflight = self.inflight.lock().unwrap();
+            inflight
+                .entry(instance_id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _open_guard = open_lock.lock().await;
+
+        // Double-check: the winner may have cached services while we waited.
+        {
+            let cache = self.instances.read().unwrap();
+            if let Some(services) = cache.get(instance_id) {
+                return Ok(services.clone());
+            }
+        }
 
         // Locate the database for this instance (workspace or child).
         let db_path = self.locate_db(instance_id).await?;
@@ -561,13 +596,7 @@ mod tests {
     mod integration {
         use super::super::*;
 
-        async fn manager_with_dir() -> TenantPoolManager {
-            let dir =
-                std::env::temp_dir().join(format!("pdt_tenant_test_{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&dir).unwrap();
-
-            // Build real global services on an in-memory SQLite so the manager
-            // is fully functional.
+        async fn global_services() -> Services {
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(1)
                 .connect_with(
@@ -582,14 +611,55 @@ mod tests {
             let groups_sql = include_str!("../migrations/sqlite/002_groups.sql");
             sqlx::raw_sql(groups_sql).execute(&pool).await.unwrap();
 
-            let services = Services::from_repositories(
+            Services::from_repositories(
                 SqliteAssetRepository::new(pool.clone()),
                 SqliteRelationRepository::new(pool.clone()),
                 SqliteCollectionRepository::new(pool.clone()),
                 SqliteAuditRepository::new(pool.clone()),
                 SqliteGroupRepository::new(pool),
-            );
-            TenantPoolManager::new(services, dir, Vec::new())
+            )
+        }
+
+        async fn manager_with_dir() -> TenantPoolManager {
+            let dir =
+                std::env::temp_dir().join(format!("pdt_tenant_test_{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            TenantPoolManager::new(global_services().await, dir, Vec::new())
+        }
+
+        #[tokio::test]
+        async fn concurrent_first_touch_singleflight_no_500() {
+            // The 002_groups restart 500-window guard (paydar's 2026-11-07
+            // sighting, 2nd instance of the class): concurrent first-touches
+            // of one store must AWAIT the same open, not race it — the
+            // loser's 002_groups write hit the winner's write lock and died
+            // at the ~5s busy_timeout (3×500 @ ~5.05s per restart window).
+            // Smoke guard: 8 concurrent get_services on a COLD manager (the
+            // cache is empty, every call takes the open path) all succeed.
+            let mgr1 = manager_with_dir().await;
+            let ws = uuid::Uuid::new_v4().to_string();
+            mgr1.provision_instance(&ws, None).await.unwrap();
+            let dir = mgr1.instances_dir.clone();
+            drop(mgr1);
+
+            let mgr = Arc::new(TenantPoolManager::new(
+                global_services().await,
+                dir,
+                Vec::new(),
+            ));
+            let mut handles = Vec::new();
+            for _ in 0..8 {
+                let mgr = mgr.clone();
+                let ws = ws.clone();
+                handles.push(tokio::spawn(
+                    async move { mgr.get_services(Some(&ws)).await },
+                ));
+            }
+            for h in handles {
+                h.await
+                    .unwrap()
+                    .expect("concurrent first-touch must not 500 (singleflight guard)");
+            }
         }
 
         #[tokio::test]

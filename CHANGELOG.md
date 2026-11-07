@@ -5,6 +5,49 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.31] — 2026-11-07
+
+### Fixed — the audit-prune EXECUTION walk's per-chunk re-scan (issue 2c71e4e6) + the 002_groups restart 500-window (singleflight)
+
+- FIX 1 — the execution archive walk (issue 2c71e4e6, paydar's 2026-11-07
+  decode relayed by farzan): the replaced id-ASC cursor shape
+  (`WHERE timestamp < ? AND id > ? ORDER BY id ASC LIMIT 500`) made every
+  500-row page re-scan forward through the table on band-class volume —
+  238,958 candidates ≈ 160 pages ≈ 25–40 min on prod (clients time out
+  long before; the manual chunked path did the same volume in ~90s,
+  ~20x faster). The walk now MATERIALIZES the candidate id set in ONE
+  index-driven pass (`ids_before` — `WHERE timestamp < ?`, served by
+  idx_audit_timestamp, no ORDER BY) and fetches full rows per
+  explicit-id chunk (`list_by_ids` — PK-driven IN-list, exact, no
+  re-scan). The candidate set is stable during the walk (rows created
+  mid-walk are newer than the cutoff, never candidates); the
+  archive-then-delete row-count verify still refuses a partial archive.
+  `list_before` is superseded by the pair (removed — dead code is debt).
+- FIX 2 — the 002_groups restart 500-window (paydar's 2026-11-07 sighting,
+  2nd instance of the class, "yours to rule"): concurrent first-touches of
+  one tenant store after a restart each ran the migration replay + FTS
+  rebuild, and the loser's 002_groups write hit the winner's write lock
+  and died at the ~5s busy_timeout (3×500 @ ~5.05s per restart window,
+  self-healing when the rebuilds finished — ~60–90s of tenant 500s after
+  EVERY pdt restart). TenantPoolManager now singleflights the open per
+  instance UUID: concurrent first-touches await the SAME open and
+  re-check the cache when it lands — the 500-window becomes a wait, never
+  an error. Guard: concurrent_first_touch_singleflight_no_500 (8
+  concurrent cold-manager opens).
+- DOC — the audit-prune endpoint's post-run guidance (ruling 129f3707's
+  acceptance addition): row counts are necessary but NOT sufficient — a
+  row-count-only acceptance hides a no-reclamation prune (VACUUM delta-0
+  on scattered deletes; the real reclaim comes from a restart's recovery
+  consolidation after long-lived readers block WAL checkpoints). Every
+  prune acceptance carries the DISK datum alongside the row counts.
+- IT extended: the band-class volume walk (2500 old rows = 5 exact chunks
+  of 500 — archived/deleted/post-count/verified + every row in the
+  archive).
+
+Gates at release: suite 199/0 (lib 138, audit_prune_it 2, auth_degraded 4,
+gate_contract 6, sqlite_conformance 49), fmt 0, clippy 68 == HEAD baseline
+68 (zero new lints).
+
 ## [0.3.30] — 2026-11-07
 
 ### Fixed — the >120s audit-prune hang on band-class volume (issue 2c71e4e6, CPO finding)

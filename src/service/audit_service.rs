@@ -5,6 +5,10 @@ use crate::models::{AuditAction, AuditEntry};
 use crate::service::Services;
 use chrono::Utc;
 
+/// Rows per archive-walk fetch — the explicit-id chunk size for
+/// `list_by_ids` (PK-driven IN-lists; see the trait doc).
+const ARCHIVE_PAGE: usize = 500;
+
 /// Service for audit business logic
 pub struct AuditService;
 
@@ -160,8 +164,16 @@ impl AuditService {
             ))
         })?;
 
-        // ARCHIVE phase: cursor-walk every candidate row (id-ASC pagination —
-        // exact, no skips) into a dated JSONL file, one AuditEntry per line.
+        // ARCHIVE phase: the candidate id set materializes in ONE
+        // index-driven pass (ids_before — the set is stable during the
+        // walk: rows created mid-walk are newer than the cutoff, never
+        // candidates), then the walk fetches full rows per explicit-id
+        // chunk (list_by_ids — PK-driven, exact, NO per-chunk re-scan; the
+        // id-ASC cursor shape it replaces re-scanned forward through the
+        // table per 500-row page on band-class volume — 238,958 candidates
+        // ≈ 160 pages ≈ 25–40 min on prod, paydar's 2026-11-07 decode; the
+        // materialized-id shape did the same volume in ~90s manually).
+        // Rows land in a dated JSONL file, one AuditEntry per line.
         let archive_path = archive_dir.join(format!(
             "audit-archive-{}.jsonl",
             Utc::now().format("%Y%m%dT%H%M%SZ")
@@ -170,22 +182,15 @@ impl AuditService {
             .map_err(|e| ApiError::Internal(format!("archive file not creatable: {e}")))?;
         let mut writer = std::io::BufWriter::new(file);
         let mut archived: u64 = 0;
-        let mut cursor: Option<String> = None;
-        loop {
-            let (page, next) = services
-                .audit()
-                .list_before(cutoff, 500, cursor.as_deref())
-                .await?;
+        let ids = services.audit().ids_before(cutoff).await?;
+        for chunk in ids.chunks(ARCHIVE_PAGE) {
+            let page = services.audit().list_by_ids(chunk).await?;
             for entry in &page {
                 serde_json::to_writer(&mut writer, entry)
                     .map_err(|e| ApiError::Internal(format!("archive row write failed: {e}")))?;
                 std::io::Write::write_all(&mut writer, b"\n")
                     .map_err(|e| ApiError::Internal(format!("archive row write failed: {e}")))?;
                 archived += 1;
-            }
-            match next {
-                Some(c) => cursor = Some(c),
-                None => break,
             }
         }
         std::io::Write::flush(&mut writer)

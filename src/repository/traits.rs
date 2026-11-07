@@ -296,28 +296,32 @@ pub trait AuditRepository: Send + Sync {
     /// index-ordered read, bounded by LIMIT for ANY match count), where the
     /// id-ordered shape full-scans the table when the cutoff matches few or
     /// zero rows (the >120s band-class hang). This is a REPORT, not the
-    /// archive walk — the id-ASC exactness contract belongs to `list_before`
-    /// alone.
+    /// archive walk — the exactness contract belongs to the materialized-id
+    /// walk (`ids_before` + `list_by_ids`) alone.
     async fn sample_before(
         &self,
         cutoff: chrono::DateTime<chrono::Utc>,
         limit: i64,
     ) -> Result<Vec<AuditEntry>>;
 
-    /// List audit entries older than the cutoff, cursor-paginated — the
-    /// archive walk. ORDER-AGNOSTIC by design: pagination is keyed on the
-    /// unique `id` PK (`id > cursor`, ascending) so the walk is exact (no
-    /// skips, no duplicates) regardless of timestamp/id ordering agreement.
-    /// The existing `list` (timestamp-ordered, id-cursored) serves the API
-    /// surface; this walk feeds the archive-then-delete verify, where a
-    /// skipped row would fail the row-count verify — exactness is the
-    /// contract here.
-    async fn list_before(
-        &self,
-        cutoff: chrono::DateTime<chrono::Utc>,
-        limit: i64,
-        cursor: Option<&str>,
-    ) -> Result<(Vec<AuditEntry>, Option<String>)>;
+    /// The candidate id set for the audit-prune archive walk — ONE
+    /// index-driven pass (`WHERE timestamp < ?`, served by
+    /// idx_audit_timestamp; no ORDER BY, so the planner never falls back to
+    /// a sort or a rowid scan). The candidate set is STABLE during the
+    /// walk: rows created mid-walk carry timestamps newer than the cutoff,
+    /// so they are never candidates (issue 2c71e4e6).
+    async fn ids_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<Vec<String>>;
+
+    /// Full rows for an EXPLICIT id set — the archive walk's fetch phase.
+    /// PK-driven (`id IN (...)`): exact, no re-scan, no cursor. The
+    /// per-chunk id-ASC re-scan shape it replaces (`WHERE timestamp < ? AND
+    /// id > ? ORDER BY id`) made every 500-row page re-scan forward through
+    /// the table on band-class volume — 238,958 candidates ≈ 160 pages ≈
+    /// 25–40 min on prod (paydar's 2026-11-07 decode; the materialized-id
+    /// shape did the same volume in ~90s manually). The CALLER chunks the
+    /// id set and archives every returned row; the row-count verify refuses
+    /// a partial archive (issue 2c71e4e6).
+    async fn list_by_ids(&self, ids: &[String]) -> Result<Vec<AuditEntry>>;
 
     /// Delete audit entries older than the cutoff — the audit-prune delete
     /// verb. Returns the rows affected. The CALLER archives + verifies the

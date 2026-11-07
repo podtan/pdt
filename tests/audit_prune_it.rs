@@ -505,6 +505,44 @@ async fn audit_prune_end_to_end_gates_dry_run_and_archive_then_delete() {
         "0-match execution deletes nothing (and writes no audit entry)"
     );
 
+    // ---- Phase 9: BAND-CLASS VOLUME WALK (the per-chunk re-scan cure) ----
+    // The execution walk's materialized-id shape (ids_before + list_by_ids)
+    // at multi-chunk volume: 2500 old rows = 5 exact chunks of 500. The
+    // replaced id-ASC cursor shape re-scanned forward through the table per
+    // 500-row page on band-class volume (25–40 min on prod, paydar's
+    // 2026-11-07 decode); the materialized walk is PK-driven per chunk and
+    // the row-count verify still refuses a partial archive.
+    seed_audit_entries(&band_db, 2500, 0).await;
+    let (status, body) = post_audit_prune(app.clone(), &band, 90, false).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "volume execution answers 200: {body}"
+    );
+    assert_eq!(body["candidates"], serde_json::Value::from(2500));
+    assert_eq!(
+        body["archived"],
+        serde_json::Value::from(2500),
+        "the materialized walk archived every candidate (5 chunks × 500): {body}"
+    );
+    assert_eq!(body["deleted"], serde_json::Value::from(2500));
+    assert_eq!(body["post_count"], serde_json::Value::from(0));
+    assert_eq!(body["verified"], serde_json::Value::Bool(true));
+    let volume_archive = PathBuf::from(body["archive_path"].as_str().expect("archive_path"));
+    let volume_lines = std::fs::read_to_string(&volume_archive)
+        .expect("volume archive reads")
+        .lines()
+        .count();
+    assert_eq!(
+        volume_lines, 2500,
+        "the volume archive holds every deleted row"
+    );
+    assert_eq!(
+        count_rows(&band_db).await,
+        7,
+        "5 fresh rows + the two prunes' own audit entries survive the volume walk"
+    );
+
     // ---- Cleanup: env + temp dir ----
     std::env::remove_var("PDT_PRUNE_ENABLED");
     std::env::remove_var("PDT_PRUNE_POLICY_PATH");

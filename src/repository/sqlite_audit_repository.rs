@@ -196,40 +196,39 @@ impl AuditRepository for SqliteAuditRepository {
         Ok(count)
     }
 
-    async fn list_before(
-        &self,
-        cutoff: chrono::DateTime<chrono::Utc>,
-        limit: i64,
-        cursor: Option<&str>,
-    ) -> Result<(Vec<AuditEntry>, Option<String>)> {
-        // Archive walk: order-agnostic, pagination keyed on the unique id PK
-        // (`id > cursor` ASC) — exact, no skips/duplicates (see the trait
-        // doc; the timestamp-ordered + id-cursored `list` pattern can skip
-        // rows when timestamp and id ordering disagree, which the
-        // archive-then-delete row-count verify cannot tolerate).
+    async fn ids_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<Vec<String>> {
+        // ONE index-driven pass: idx_audit_timestamp serves the filter; no
+        // ORDER BY — the id-ordered shape re-scans forward through the table
+        // per page on band-class volume (the >120s hang, issue 2c71e4e6).
+        // The uniform +00:00 offset makes lexical comparison chronological
+        // (the same assumption count_before makes).
         let cutoff_str = cutoff.to_rfc3339();
-        let rows =
-            match cursor {
-                Some(c) => sqlx::query_as::<_, AuditRow>(
-                    "SELECT id, entity_type, entity_id, action, changes_json, user_id, timestamp
-                     FROM audit_entries WHERE timestamp < ? AND id > ?
-                     ORDER BY id ASC LIMIT ?",
-                )
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT id FROM audit_entries WHERE timestamp < ?")
                 .bind(&cutoff_str)
-                .bind(c)
-                .bind(limit)
                 .fetch_all(&self.pool)
-                .await?,
-                None => sqlx::query_as::<_, AuditRow>(
-                    "SELECT id, entity_type, entity_id, action, changes_json, user_id, timestamp
-                     FROM audit_entries WHERE timestamp < ?
-                     ORDER BY id ASC LIMIT ?",
-                )
-                .bind(&cutoff_str)
-                .bind(limit)
-                .fetch_all(&self.pool)
-                .await?,
-            };
+                .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    async fn list_by_ids(&self, ids: &[String]) -> Result<Vec<AuditEntry>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // PK-driven IN-list — exact, no re-scan, no cursor (see the trait
+        // doc). ORDER BY id ASC keeps the archive deterministic (the PK
+        // index serves the sort on a 500-row chunk).
+        let placeholders = vec!["?"; ids.len()].join(", ");
+        let sql = format!(
+            "SELECT id, entity_type, entity_id, action, changes_json, user_id, timestamp
+             FROM audit_entries WHERE id IN ({placeholders})
+             ORDER BY id ASC"
+        );
+        let mut query = sqlx::query_as::<_, AuditRow>(&sql);
+        for id in ids {
+            query = query.bind(id);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
 
         let entries: Vec<AuditEntry> = rows
             .into_iter()
@@ -246,15 +245,7 @@ impl AuditRepository for SqliteAuditRepository {
             })
             .collect();
 
-        // The walk page is full → there may be more; the cursor is the last
-        // id of THIS page (id > cursor continues exactly after it).
-        let next_cursor = if entries.len() == limit as usize {
-            entries.last().map(|e| e.id.clone())
-        } else {
-            None
-        };
-
-        Ok((entries, next_cursor))
+        Ok(entries)
     }
 
     async fn sample_before(

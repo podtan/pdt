@@ -34,6 +34,13 @@
 //! BACKUP-FIRST is procedural (the band-db backup is asserted in the
 //! runbook — a 2G in-request copy would be its own outage); the archive +
 //! verify + post-count are the mechanical no-silent-delete guarantees.
+//! POST-RUN GUIDANCE (ruling 129f3707's acceptance addition): the report's
+//! row counts are necessary but NOT sufficient — a row-count-only
+//! acceptance hides a no-reclamation prune (VACUUM delta-0 on scattered
+//! deletes; the real disk reclaim comes from a restart's recovery
+//! consolidation after long-lived reader transactions block WAL
+//! checkpoints). Every prune acceptance carries the DISK datum
+//! (bytes-before/after) alongside the row counts.
 //!
 //! ADMIN GATE (both endpoints) — token role claim first, then the registry
 //! fallback (CPO precondition 1, routing 0ae73f46): exchanged tokens (RFC

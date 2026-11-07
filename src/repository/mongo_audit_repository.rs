@@ -126,38 +126,49 @@ impl AuditRepository for MongoAuditRepository {
         Ok(count as i64)
     }
 
-    async fn list_before(
-        &self,
-        cutoff: chrono::DateTime<chrono::Utc>,
-        limit: i64,
-        cursor: Option<&str>,
-    ) -> Result<(Vec<AuditEntry>, Option<String>)> {
-        // Archive walk: order-agnostic, pagination keyed on the unique _id PK
-        // (ascending) — exact, no skips/duplicates (see the trait doc).
-        let mut filter = doc! { "timestamp": { "$lt": bson::DateTime::from(cutoff) } };
-        if let Some(c) = cursor {
-            filter.insert("_id", doc! { "$gt": c });
+    async fn ids_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<Vec<String>> {
+        // ONE index-driven pass (the timestamp index serves the filter; no
+        // sort) — the candidate id set for the archive walk (see the trait
+        // doc). Projection onto _id only: the walk's heavy rows
+        // (changes_json) are fetched per explicit-id chunk by list_by_ids,
+        // not here.
+        let filter = doc! { "timestamp": { "$lt": bson::DateTime::from(cutoff) } };
+        let options = mongodb::options::FindOptions::builder()
+            .projection(doc! { "_id": 1 })
+            .build();
+        let mut cur = self
+            .db
+            .audit()
+            .clone_with_type::<bson::Document>()
+            .find(filter)
+            .with_options(options)
+            .await?;
+        let mut ids = Vec::new();
+        while let Some(row) = cur.try_next().await? {
+            if let Some(bson::Bson::String(id)) = row.get("_id") {
+                ids.push(id.clone());
+            }
         }
+        Ok(ids)
+    }
 
+    async fn list_by_ids(&self, ids: &[String]) -> Result<Vec<AuditEntry>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // PK-driven $in — exact, no re-scan (see the trait doc); sorted by
+        // _id for a deterministic archive order.
+        let in_list: Vec<bson::Bson> = ids.iter().map(|s| bson::Bson::String(s.clone())).collect();
+        let filter = doc! { "_id": { "$in": in_list } };
         let options = mongodb::options::FindOptions::builder()
             .sort(doc! { "_id": 1 })
-            .limit(limit)
             .build();
-
         let mut cur = self.db.audit().find(filter).with_options(options).await?;
         let mut entries = Vec::new();
-
         while let Some(entry) = cur.try_next().await? {
             entries.push(entry);
         }
-
-        let next_cursor = if entries.len() == limit as usize {
-            entries.last().map(|e| e.id.clone())
-        } else {
-            None
-        };
-
-        Ok((entries, next_cursor))
+        Ok(entries)
     }
 
     async fn sample_before(
