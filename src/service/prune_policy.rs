@@ -24,6 +24,16 @@
 //! - messages of record: 180d → archive (never silent-delete)
 //! - assets of record:   indefinite (explicit v+1 supersession only)
 //!
+//! The AUDIT-ENTRIES TABLE class (issue 2c71e4e6 — the THQ band's 1.88M-row
+//! audit churn) is a TABLE class, not a (tag_category, tag_value) asset
+//! class: it rides the dedicated `audit_entries` policy section + the
+//! POST /api/maintenance/audit-prune verb. Its endorsed disposition is
+//! ARCHIVE-THEN-DELETE (90d hot → dated archive file → delete): the archive
+//! IS the record, so the delete is not a silent delete — but the disposition
+//! must be DECLARED in the policy (absent section = execution refused,
+//! fail-closed). The asset-prune verb still refuses the class (it cannot
+//! touch the audit_entries table).
+//!
 //! Supersession-awareness (drill artifacts) is a candidate-selection
 //! refinement, not a window guard: the first execution class is noise
 //! (rahnama routing 21894fd2), and the drill class must not execute until
@@ -40,6 +50,12 @@ pub enum Disposition {
     Archive,
     /// Soft-delete at the window (operational noise 14d, drill artifacts 30d).
     SoftDelete,
+    /// Archive-then-delete: rows are exported to a dated archive file with
+    /// row-count verify FIRST, then deleted — the archive IS the record, so
+    /// the delete is not silent. The audit-entries table class (issue
+    /// 2c71e4e6); executable ONLY via the audit-prune verb, never the asset
+    /// prune.
+    ArchiveThenDelete,
 }
 
 /// One class entry — the (tag_category, tag_value) pair identifies the class
@@ -52,6 +68,16 @@ pub struct ClassEntry {
     pub disposition: Disposition,
 }
 
+/// The AUDIT-ENTRIES TABLE class (issue 2c71e4e6) — a dedicated policy
+/// section, not a (tag_category, tag_value) asset class: the audit_entries
+/// table is not an asset and carries no tags. Absent section = the class
+/// has no retention policy = execution refused (fail-closed).
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditEntriesClass {
+    pub window_days: u32,
+    pub disposition: Disposition,
+}
+
 /// The retention policy — a list of class entries loaded from the policy
 /// file. Duplicate (category, value) pairs: FIRST entry wins (the operator's
 /// file is authoritative; the loader never widens on duplicates).
@@ -59,6 +85,8 @@ pub struct ClassEntry {
 pub struct PrunePolicy {
     #[serde(default)]
     classes: Vec<ClassEntry>,
+    #[serde(default)]
+    audit_entries: Option<AuditEntriesClass>,
 }
 
 /// Verdict for an execution attempt against the policy.
@@ -125,6 +153,64 @@ impl PrunePolicy {
                         "window {older_than_days}d is below the policy window ({}d) for class \
                          ({tag_category},{tag_value}) — execution refused (only prune at least \
                          as old as policy)",
+                        entry.window_days
+                    ))
+                } else {
+                    PruneVerdict::Allowed
+                }
+            }
+            // The asset prune is soft-delete-only (archive-over-delete hard
+            // line): an archive-then-delete class is not executable HERE —
+            // the audit-entries verb is the only archive-then-delete executor.
+            Disposition::ArchiveThenDelete => PruneVerdict::Refused(format!(
+                "class ({tag_category},{tag_value}) disposition archive_then_delete is not \
+                 executable via the asset prune (soft-delete only) — the audit-entries verb \
+                 is the only archive-then-delete executor",
+            )),
+        }
+    }
+
+    /// Evaluate an audit-prune execution attempt (the audit_entries TABLE
+    /// class, issue 2c71e4e6) against the policy.
+    ///
+    /// Guards, in order (fail-closed at every step):
+    /// 1. Section absent from the policy → refused (the audit-entries class
+    ///    has no retention policy — never prune it by window).
+    /// 2. Disposition archive or soft_delete → refused (the audit trail is
+    ///    the record: archive-only is unexecutable by this verb, and bare
+    ///    soft-delete of audit rows is prohibited — the endorsed disposition
+    ///    is archive_then_delete, declared in the policy).
+    /// 3. Window below the policy window → refused (only prune at least as
+    ///    old as policy).
+    pub fn evaluate_audit_entries(&self, older_than_days: u32) -> PruneVerdict {
+        let entry = match &self.audit_entries {
+            Some(e) => e,
+            None => {
+                return PruneVerdict::Refused(
+                    "no audit-entries class in the retention policy (PDT_PRUNE_POLICY_PATH) — \
+                     execution refused (fail-closed; dry-run remains available)"
+                        .to_string(),
+                )
+            }
+        };
+        match entry.disposition {
+            Disposition::Archive => PruneVerdict::Refused(
+                "audit-entries class is archive-only under the retention policy — this verb \
+                 archives-then-deletes, so the policy must carry disposition \
+                 archive_then_delete"
+                    .to_string(),
+            ),
+            Disposition::SoftDelete => PruneVerdict::Refused(
+                "audit-entries soft-delete is prohibited (the audit trail is the record) — \
+                 the policy must carry disposition archive_then_delete"
+                    .to_string(),
+            ),
+            Disposition::ArchiveThenDelete => {
+                if older_than_days < entry.window_days {
+                    PruneVerdict::Refused(format!(
+                        "window {older_than_days}d is below the policy window ({}d) for the \
+                         audit-entries class — execution refused (only prune at least as old \
+                         as policy)",
                         entry.window_days
                     ))
                 } else {
@@ -271,5 +357,92 @@ mod policy_tests {
         });
         assert_eq!(p.evaluate("type", "noise", 14), PruneVerdict::Allowed);
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ---- The audit-entries TABLE class (issue 2c71e4e6) ----
+
+    /// The audit-entries policy section, the endorsed shape (90d hot →
+    /// archive-then-delete).
+    const AUDIT_CLASS: &str = r#"{
+        "classes": [],
+        "audit_entries": {"window_days": 90, "disposition": "archive_then_delete"}
+    }"#;
+
+    #[test]
+    fn audit_entries_class_absent_refuses_fail_closed() {
+        // The endorsed ASSET table carries no audit_entries section — the
+        // audit-prune verb must refuse execution (fail-closed).
+        let p = endorsed();
+        assert!(matches!(
+            p.evaluate_audit_entries(90),
+            PruneVerdict::Refused(_)
+        ));
+        assert!(matches!(
+            p.evaluate_audit_entries(365),
+            PruneVerdict::Refused(_)
+        ));
+    }
+
+    #[test]
+    fn audit_entries_archive_then_delete_allowed_at_and_above_window() {
+        let p: PrunePolicy = serde_json::from_str(AUDIT_CLASS).expect("audit class parses");
+        assert_eq!(p.evaluate_audit_entries(90), PruneVerdict::Allowed);
+        assert_eq!(p.evaluate_audit_entries(180), PruneVerdict::Allowed);
+    }
+
+    #[test]
+    fn audit_entries_below_window_refused() {
+        let p: PrunePolicy = serde_json::from_str(AUDIT_CLASS).expect("audit class parses");
+        match p.evaluate_audit_entries(30) {
+            PruneVerdict::Refused(reason) => {
+                assert!(reason.contains("below the policy window"), "{reason}");
+            }
+            PruneVerdict::Allowed => panic!("sub-policy window must be refused"),
+        }
+    }
+
+    #[test]
+    fn audit_entries_archive_disposition_refused() {
+        // disposition archive = the archive-only asset semantics — the
+        // audit-prune verb archives-then-deletes; the policy must declare it.
+        let p: PrunePolicy = serde_json::from_str(
+            r#"{"audit_entries": {"window_days": 90, "disposition": "archive"}}"#,
+        )
+        .expect("parses");
+        match p.evaluate_audit_entries(90) {
+            PruneVerdict::Refused(reason) => {
+                assert!(reason.contains("archive_then_delete"), "{reason}");
+            }
+            PruneVerdict::Allowed => panic!("archive disposition must refuse"),
+        }
+    }
+
+    #[test]
+    fn audit_entries_soft_delete_disposition_refused() {
+        // Bare soft-delete of audit rows is prohibited (the audit trail is
+        // the record) — the endorsed disposition is archive_then_delete.
+        let p: PrunePolicy = serde_json::from_str(
+            r#"{"audit_entries": {"window_days": 90, "disposition": "soft_delete"}}"#,
+        )
+        .expect("parses");
+        assert!(matches!(
+            p.evaluate_audit_entries(90),
+            PruneVerdict::Refused(_)
+        ));
+    }
+
+    #[test]
+    fn asset_class_with_archive_then_delete_disposition_refused_by_asset_prune() {
+        // The asset prune is soft-delete-only: an asset class carrying the
+        // audit disposition must refuse there too (the audit-entries verb is
+        // the only archive-then-delete executor).
+        let p: PrunePolicy = serde_json::from_str(
+            r#"{"classes": [{"tag_category": "type", "tag_value": "report", "window_days": 30, "disposition": "archive_then_delete"}]}"#,
+        )
+        .expect("parses");
+        assert!(matches!(
+            p.evaluate("type", "report", 30),
+            PruneVerdict::Refused(_)
+        ));
     }
 }

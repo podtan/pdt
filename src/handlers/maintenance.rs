@@ -22,6 +22,19 @@
 //! - scheduled+announced windows with pre-prune snapshots are procedural
 //!   (the dry-run report exists to be sighted and announced).
 //!
+//! POST /api/maintenance/audit-prune — the AUDIT-ENTRIES retention verb
+//! (issue 2c71e4e6, the THQ band's 1.88M-row audit_entries churn):
+//! ARCHIVE-THEN-DELETE, not soft-delete — the audit_entries table is the
+//! record of record, so rows are exported to a dated JSONL archive with
+//! row-count verify FIRST, then deleted; the archive IS the record and the
+//! delete rides one audit entry. Same fail-closed gates as the asset prune
+//! (admin / PDT_PRUNE_ENABLED / policy-cleared window via
+//! PDT_PRUNE_POLICY_PATH — the audit-entries class is a dedicated policy
+//! section, disposition archive_then_delete, absent = refused).
+//! BACKUP-FIRST is procedural (the band-db backup is asserted in the
+//! runbook — a 2G in-request copy would be its own outage); the archive +
+//! verify + post-count are the mechanical no-silent-delete guarantees.
+//!
 //! ADMIN GATE (both endpoints) — token role claim first, then the registry
 //! fallback (CPO precondition 1, routing 0ae73f46): exchanged tokens (RFC
 //! 8693, the 6c8efe55 no-claims class) carry NO role/groups, so the
@@ -30,17 +43,20 @@
 //! the backfill syncs). Fail-closed preserved: no token role AND no registry
 //! admin role = 403.
 
+use axum::extract::{FromRef, State};
 use axum::Json;
 use serde::Deserialize;
 
 use crate::auth::AuthenticatedUser;
-use crate::cedar::enforcement::TenantState;
+use crate::cedar::enforcement::{AppRawState, TenantState};
 use crate::error::{ApiError, Result};
 use crate::models::roles::GLOBAL_ROLE_ADMIN;
 use crate::service::directory_service::DirectoryService;
 use crate::service::prune_policy::{PrunePolicy, PruneVerdict};
 use crate::service::roles_service::RolesService;
 use crate::service::AssetService;
+use crate::service::AuditService;
+use crate::tenant::TenantPoolManager;
 
 /// Extract role strings from the caller's claims — Kanidm returns `role` as
 /// a JSON array; some IdPs return a single string (cedar/entity.rs nuance).
@@ -225,6 +241,141 @@ pub async fn prune(
     if req.dry_run {
         let verdict = match &policy {
             Some(p) => match p.evaluate(&req.tag_category, &req.tag_value, req.older_than_days) {
+                PruneVerdict::Allowed => "allowed".to_string(),
+                PruneVerdict::Refused(reason) => format!("refused: {reason}"),
+            },
+            None => "refused: no retention policy loaded (fail-closed)".to_string(),
+        };
+        body.insert(
+            "policy_verdict".to_string(),
+            serde_json::Value::String(verdict),
+        );
+    }
+    Ok(Json(serde_json::Value::Object(body)))
+}
+
+/// Audit-entries retention prune request (issue 2c71e4e6) — the policy
+/// lives in DATA (the audit_entries section of PDT_PRUNE_POLICY_PATH); the
+/// endpoint encodes only the mechanics.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct AuditPruneRequest {
+    /// Age window in days — audit entries older than this are candidates.
+    pub older_than_days: u32,
+    /// true = report the numbers only (zero writes). false = execute the
+    /// archive-then-delete prune — REFUSED unless PDT_PRUNE_ENABLED is set
+    /// AND the audit-entries class is policy-cleared (section present,
+    /// disposition archive_then_delete, window at/above the policy window).
+    pub dry_run: bool,
+}
+
+/// Resolve the audit-archive directory: the PDT_AUDIT_ARCHIVE_DIR override
+/// wins (the operator may direct archives off-store); else the band
+/// directory that hosts the instance's pdt.db — the archive lives next to
+/// the store it documents.
+async fn resolve_archive_dir(tx: &TenantState, state: &AppRawState) -> Result<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("PDT_AUDIT_ARCHIVE_DIR") {
+        if !dir.is_empty() {
+            return Ok(std::path::PathBuf::from(dir));
+        }
+    }
+    let manager = TenantPoolManager::from_ref(state);
+    manager
+        .audit_archive_dir(tx.instance_id())
+        .await
+        .map_err(|e| ApiError::Internal(format!("audit archive directory unresolved: {e}")))
+}
+
+/// Audit-entries retention prune — ARCHIVE-THEN-DELETE (issue 2c71e4e6).
+/// The audit_entries table is the record of record: rows older than the
+/// window are exported to a dated JSONL archive with row-count verify
+/// FIRST, then deleted — no silent deletes. Same fail-closed gates as the
+/// asset prune.
+#[utoipa::path(
+    post,
+    path = "/api/maintenance/audit-prune",
+    request_body = AuditPruneRequest,
+    responses(
+        (status = 200, description = "Audit-prune report (dry-run numbers or archive-then-delete summary)"),
+        (status = 403, description = "Requires role=admin (token claim or registry global_role); execution refused when PDT_PRUNE_ENABLED unset, or the audit-entries class is not policy-cleared (absent policy, absent section, disposition not archive_then_delete, or window below policy)"),
+    ),
+    tag = "maintenance",
+)]
+pub async fn audit_prune(
+    tx: TenantState,
+    user: AuthenticatedUser,
+    State(state): State<AppRawState>,
+    Json(req): Json<AuditPruneRequest>,
+) -> Result<Json<serde_json::Value>> {
+    // Admin gate — fail-closed, with the registry fallback for claim-less
+    // exchanged tokens (CPO precondition 1).
+    admin_gate(&tx, &user).await?;
+
+    // Policy gate: the audit-entries class loads from PDT_PRUNE_POLICY_PATH
+    // at invocation — data, not code. No policy = execution refused
+    // (fail-closed); dry-run still answers — the numbers are the gate's
+    // input.
+    let policy = PrunePolicy::load_from_env();
+
+    // Wire gate: execution (dry_run=false) refused unless PDT_PRUNE_ENABLED.
+    // Dry-run is ALWAYS available — the numbers are the gate's input.
+    let execution_enabled = prune_execution_enabled();
+    if !req.dry_run && !execution_enabled {
+        return Err(ApiError::Forbidden(
+            "audit-prune execution disabled — set PDT_PRUNE_ENABLED after the CPO sights the dry-run numbers (ruling 8d591e85)".to_string(),
+        ));
+    }
+
+    // Class gate: execution requires the audit-entries class to be
+    // policy-cleared — section present, disposition archive_then_delete,
+    // window at/above the policy window.
+    if !req.dry_run {
+        let verdict = match &policy {
+            Some(p) => p.evaluate_audit_entries(req.older_than_days),
+            None => PruneVerdict::Refused(
+                "no retention policy loaded (PDT_PRUNE_POLICY_PATH unset or unreadable) — execution refused (fail-closed)".to_string(),
+            ),
+        };
+        if let PruneVerdict::Refused(reason) = verdict {
+            return Err(ApiError::Forbidden(reason));
+        }
+    }
+
+    // Archive dir: dry-run resolves best-effort (the report shows the
+    // planned home; an unresolved dir never fails a dry-run); execution
+    // REQUIRES it (the archive is the record — no archive, no delete).
+    let archive_dir = if req.dry_run {
+        resolve_archive_dir(&tx, &state).await.ok()
+    } else {
+        Some(resolve_archive_dir(&tx, &state).await?)
+    };
+
+    let report = AuditService::audit_prune(
+        tx.services(),
+        req.older_than_days,
+        req.dry_run,
+        &user.user_id,
+        archive_dir,
+    )
+    .await?;
+
+    // Envelope: report + the gate states, so every response is self-describing.
+    let mut body = match report {
+        serde_json::Value::Object(map) => map,
+        other => return Ok(Json(other)),
+    };
+    body.insert(
+        "execution_enabled".to_string(),
+        serde_json::Value::Bool(execution_enabled),
+    );
+    body.insert(
+        "policy_loaded".to_string(),
+        serde_json::Value::Bool(policy.is_some()),
+    );
+    // Dry-run carries the policy verdict — the CPO sight reads whether
+    // execution WOULD be allowed for this window, not just the counts.
+    if req.dry_run {
+        let verdict = match &policy {
+            Some(p) => match p.evaluate_audit_entries(req.older_than_days) {
                 PruneVerdict::Allowed => "allowed".to_string(),
                 PruneVerdict::Refused(reason) => format!("refused: {reason}"),
             },

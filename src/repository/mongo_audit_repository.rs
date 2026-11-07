@@ -119,4 +119,50 @@ impl AuditRepository for MongoAuditRepository {
 
         Ok(entries)
     }
+
+    async fn count_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<i64> {
+        let filter = doc! { "timestamp": { "$lt": bson::DateTime::from(cutoff) } };
+        let count = self.db.audit().count_documents(filter).await?;
+        Ok(count as i64)
+    }
+
+    async fn list_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<AuditEntry>, Option<String>)> {
+        // Archive walk: order-agnostic, pagination keyed on the unique _id PK
+        // (ascending) — exact, no skips/duplicates (see the trait doc).
+        let mut filter = doc! { "timestamp": { "$lt": bson::DateTime::from(cutoff) } };
+        if let Some(c) = cursor {
+            filter.insert("_id", doc! { "$gt": c });
+        }
+
+        let options = mongodb::options::FindOptions::builder()
+            .sort(doc! { "_id": 1 })
+            .limit(limit)
+            .build();
+
+        let mut cur = self.db.audit().find(filter).with_options(options).await?;
+        let mut entries = Vec::new();
+
+        while let Some(entry) = cur.try_next().await? {
+            entries.push(entry);
+        }
+
+        let next_cursor = if entries.len() == limit as usize {
+            entries.last().map(|e| e.id.clone())
+        } else {
+            None
+        };
+
+        Ok((entries, next_cursor))
+    }
+
+    async fn delete_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<u64> {
+        let filter = doc! { "timestamp": { "$lt": bson::DateTime::from(cutoff) } };
+        let result = self.db.audit().delete_many(filter).await?;
+        Ok(result.deleted_count)
+    }
 }

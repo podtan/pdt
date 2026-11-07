@@ -250,7 +250,13 @@ pub trait GroupRepository: Send + Sync {
 }
 
 /// Repository for audit operations.
+// clippy::double_must_use fires on the async_trait expansion (the macro
+// adds #[must_use] to the returned Box<dyn Future>, already must_use) —
+// repo-wide class on this toolchain (45 instances on HEAD across all five
+// traits); scoped here so the audit-prune additions (2c71e4e6) add no new
+// instances.
 #[async_trait]
+#[allow(clippy::double_must_use)]
 pub trait AuditRepository: Send + Sync {
     /// Create a new audit entry.
     async fn create(
@@ -279,4 +285,29 @@ pub trait AuditRepository: Send + Sync {
         entity_id: &str,
         limit: i64,
     ) -> Result<Vec<AuditEntry>>;
+
+    /// Count audit entries older than the cutoff — the audit-prune candidate
+    /// count (issue 2c71e4e6: the audit-entries retention verb).
+    async fn count_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<i64>;
+
+    /// List audit entries older than the cutoff, cursor-paginated — the
+    /// archive walk. ORDER-AGNOSTIC by design: pagination is keyed on the
+    /// unique `id` PK (`id > cursor`, ascending) so the walk is exact (no
+    /// skips, no duplicates) regardless of timestamp/id ordering agreement.
+    /// The existing `list` (timestamp-ordered, id-cursored) serves the API
+    /// surface; this walk feeds the archive-then-delete verify, where a
+    /// skipped row would fail the row-count verify — exactness is the
+    /// contract here.
+    async fn list_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<AuditEntry>, Option<String>)>;
+
+    /// Delete audit entries older than the cutoff — the audit-prune delete
+    /// verb. Returns the rows affected. The CALLER archives + verifies the
+    /// archive FIRST (archive-then-delete; the archive is the record — no
+    /// silent deletes, issue 2c71e4e6).
+    async fn delete_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<u64>;
 }

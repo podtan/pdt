@@ -181,6 +181,90 @@ impl AuditRepository for SqliteAuditRepository {
 
         Ok(entries)
     }
+
+    async fn count_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<i64> {
+        // The timestamp column stores RFC3339 strings written by `create`
+        // via Utc::now().to_rfc3339() — uniform +00:00 offset, so lexical
+        // comparison IS chronological comparison (the same ordering
+        // assumption the list/get_entity_history ORDER BY already makes).
+        let cutoff_str = cutoff.to_rfc3339();
+        let (count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM audit_entries WHERE timestamp < ?")
+                .bind(&cutoff_str)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(count)
+    }
+
+    async fn list_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<AuditEntry>, Option<String>)> {
+        // Archive walk: order-agnostic, pagination keyed on the unique id PK
+        // (`id > cursor` ASC) — exact, no skips/duplicates (see the trait
+        // doc; the timestamp-ordered + id-cursored `list` pattern can skip
+        // rows when timestamp and id ordering disagree, which the
+        // archive-then-delete row-count verify cannot tolerate).
+        let cutoff_str = cutoff.to_rfc3339();
+        let rows =
+            match cursor {
+                Some(c) => sqlx::query_as::<_, AuditRow>(
+                    "SELECT id, entity_type, entity_id, action, changes_json, user_id, timestamp
+                     FROM audit_entries WHERE timestamp < ? AND id > ?
+                     ORDER BY id ASC LIMIT ?",
+                )
+                .bind(&cutoff_str)
+                .bind(c)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?,
+                None => sqlx::query_as::<_, AuditRow>(
+                    "SELECT id, entity_type, entity_id, action, changes_json, user_id, timestamp
+                     FROM audit_entries WHERE timestamp < ?
+                     ORDER BY id ASC LIMIT ?",
+                )
+                .bind(&cutoff_str)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?,
+            };
+
+        let entries: Vec<AuditEntry> = rows
+            .into_iter()
+            .map(|r| AuditEntry {
+                id: r.id,
+                entity_type: r.entity_type,
+                entity_id: r.entity_id,
+                action: SqliteAuditRepository::parse_action(&r.action),
+                changes: serde_json::from_str(&r.changes_json).unwrap_or_default(),
+                user_id: r.user_id,
+                timestamp: chrono::DateTime::parse_from_rfc3339(&r.timestamp)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            })
+            .collect();
+
+        // The walk page is full → there may be more; the cursor is the last
+        // id of THIS page (id > cursor continues exactly after it).
+        let next_cursor = if entries.len() == limit as usize {
+            entries.last().map(|e| e.id.clone())
+        } else {
+            None
+        };
+
+        Ok((entries, next_cursor))
+    }
+
+    async fn delete_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<u64> {
+        let cutoff_str = cutoff.to_rfc3339();
+        let result = sqlx::query("DELETE FROM audit_entries WHERE timestamp < ?")
+            .bind(&cutoff_str)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
 }
 
 #[derive(sqlx::FromRow)]

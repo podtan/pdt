@@ -171,6 +171,11 @@ pub fn build_router(
         // Retention prune (admin-gated; dry-run default, execution wire-gated
         // on PDT_PRUNE_ENABLED — CPO ruling 8d591e85)
         .route("/api/maintenance/prune", post(handlers::maintenance::prune))
+        // Audit-entries retention prune (archive-then-delete — issue 2c71e4e6)
+        .route(
+            "/api/maintenance/audit-prune",
+            post(handlers::maintenance::audit_prune),
+        )
         // Audit routes
         .route("/api/audit", get(handlers::audit::list_audit_entries))
         .route(

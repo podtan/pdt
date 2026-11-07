@@ -231,6 +231,25 @@ impl TenantPoolManager {
         )))
     }
 
+    /// Resolve the audit-archive home for an instance (issue 2c71e4e6 — the
+    /// audit-prune verb): the band directory that hosts the instance's
+    /// pdt.db, so the archive lives next to the store it documents. The
+    /// global store (instance_id None) archives under
+    /// `{instances_dir}/global`. Callers may override the home entirely via
+    /// the PDT_AUDIT_ARCHIVE_DIR env (the handler checks it first).
+    pub async fn audit_archive_dir(&self, instance_id: Option<&str>) -> Result<PathBuf> {
+        match instance_id {
+            Some(id) => {
+                let db_path = self.locate_db(id).await?;
+                Ok(db_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| self.instances_dir.clone()))
+            }
+            None => Ok(self.instances_dir.join("global")),
+        }
+    }
+
     /// Create a new SQLite pool for an instance and build Services from it.
     ///
     /// `create_if_missing` is caller-declared: the request path passes
