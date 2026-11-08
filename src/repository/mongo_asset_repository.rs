@@ -161,6 +161,27 @@ impl AssetRepository for MongoAssetRepository {
             .ok_or_else(|| ApiError::NotFound(format!("Asset not found: {}", id)))
     }
 
+    async fn get_by_id_prefix(&self, prefix: &str) -> Result<Vec<Asset>> {
+        // Escape regex metacharacters so a caller-supplied .* or $ stays
+        // literal — a bare "." must never match the whole collection.
+        // Case-insensitive (agents uppercase ids); the response id is the
+        // canonical stored form either way.
+        let escaped = regex::escape(prefix);
+        let filter = doc! {
+            "_id": { "$regex": format!("^{}", escaped), "$options": "i" },
+            "deleted_at": { "$exists": false }
+        };
+
+        let options = mongodb::options::FindOptions::builder().limit(51).build();
+
+        let mut cursor = self.db.assets().find(filter).with_options(options).await?;
+        let mut assets = Vec::new();
+        while let Some(asset) = cursor.try_next().await? {
+            assets.push(asset);
+        }
+        Ok(assets)
+    }
+
     async fn update(&self, id: &str, request: UpdateAssetRequest, user_id: &str) -> Result<Asset> {
         let mut update_doc = doc! {
             "$set": {

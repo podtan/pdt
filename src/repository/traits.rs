@@ -21,6 +21,12 @@ pub trait AssetRepository: Send + Sync {
     /// Get asset by ID (excludes soft-deleted).
     async fn get_by_id(&self, id: &str) -> Result<Asset>;
 
+    /// Get live assets whose id starts with `prefix` — the git-style
+    /// short-id resolution probe (issue e9478d91). Bounded at 2 rows: the
+    /// caller only needs zero (absent), one (unique — resolvable), or
+    /// many (ambiguous) to decide. Excludes soft-deleted.
+    async fn get_by_id_prefix(&self, prefix: &str) -> Result<Vec<Asset>>;
+
     /// Update an asset's mutable fields.
     async fn update(&self, id: &str, request: UpdateAssetRequest, user_id: &str) -> Result<Asset>;
 

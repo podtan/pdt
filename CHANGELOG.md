@@ -5,6 +5,41 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.33] — 2026-11-08
+
+### Added — git-style short-id prefix resolution on by-id READ paths (issue e9478d91)
+
+- A well-formed UUID resolves directly (never a scan); a valid-hex id
+  shorter than 36 chars that is a UNIQUE prefix of exactly one live asset
+  resolves to it (case-insensitive — the response id is the canonical
+  stored form); zero matches stay a body-bearing 404 (honest absence —
+  never a guess); ≥2 matches answer **409 AMBIGUOUS_PREFIX** with the match
+  count + the minimum sufficient length hint (the divergence length);
+  malformed (non-hex, or ≥36 chars that isn't a valid UUID) answers
+  **422 MALFORMED_ID** — a caller transcription error is never masked as
+  absent. MUTATIONS STAY FULL-UUID: update/delete/tag writes keep the
+  strict `get_by_id` path — a short id on a mutation 404s honestly. (The
+  spec's teaching-422 on prefix mutations rides a future train bundled
+  with the nghr 422-envelope arm — the throughflow math makes it a
+  cross-service change, no-bundling.)
+- Coverage: `GET /api/assets/{id}` + the relations reads
+  (`GET /api/assets/{id}/relations`, `GET /api/assets/{id}/graph`) — the
+  relations queries use the RESOLVED id. One implementation point
+  (`AssetService::resolve`) kills the daily short-id 404 friction across
+  every service (14 specimens on file: pdt_getAsset, nghr get_project,
+  nghr list_project_tasks/list_project_workstreams).
+- Repository surface: `AssetRepository::get_by_id_prefix(prefix)` — sqlite
+  (LIKE with escaped wildcards, LIMIT 51 for the count) + mongo (anchored
+  case-insensitive regex, limit 51). A caller-supplied `%`/`_`/`.` stays
+  literal — never a full-table scan.
+- Tenancy: the prefix query scans the TENANT'S OWN DB only (per-tenant
+  pool) — a cross-band short id is absent, never a bypass (security-adjacent,
+  tested explicitly).
+- Conformance pins (sqlite, 8 new): unique-prefix resolves canonically,
+  absent prefix → empty, wildcards stay literal, ambiguous → 409 with
+  count + hint, malformed → 422, uppercase input resolves, cross-band
+  prefix → absent.
+
 ## [0.3.32] — 2026-11-08
 
 ### Added — the dry-run response carries the STAGED audit-entries window (issue 2240beac)

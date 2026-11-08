@@ -27,6 +27,18 @@ pub enum ApiError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    /// Git-style prefix resolution (issue e9478d91): a non-UUID id that
+    /// matches ≥2 live assets — the caller must lengthen the prefix. The
+    /// body carries the match count + the minimum sufficient length hint.
+    #[error("Ambiguous id prefix: {0}")]
+    AmbiguousPrefix(String),
+
+    /// A non-UUID, non-hex-prefix id on a by-id READ path — a caller
+    /// transcription error is never masked as absent (the 91ef0f8b
+    /// honesty law).
+    #[error("Malformed id: {0}")]
+    MalformedId(String),
+
     #[error("Internal server error: {0}")]
     Internal(String),
 
@@ -78,6 +90,14 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg.clone()),
             ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
+            ApiError::AmbiguousPrefix(msg) => {
+                (StatusCode::CONFLICT, "AMBIGUOUS_PREFIX", msg.clone())
+            }
+            ApiError::MalformedId(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "MALFORMED_ID",
+                msg.clone(),
+            ),
             ApiError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 (

@@ -106,6 +106,44 @@ pub async fn asset_get_by_id_not_found<A: AssetRepository>(assets: &A) {
     assert!(result.is_err(), "should return error for missing asset");
 }
 
+pub async fn asset_get_by_id_prefix_resolves_unique<A: AssetRepository>(assets: &A) {
+    let created = assets
+        .create(make_asset_request("Prefix specimen", "content"), "user1")
+        .await
+        .unwrap();
+    // A unique 8-char prefix of the created asset's UUID resolves to it
+    // (issue e9478d91: git-style short-id resolution on READ paths).
+    let prefix = &created.id[..8];
+    let matches = assets.get_by_id_prefix(prefix).await.unwrap();
+    assert_eq!(
+        matches.len(),
+        1,
+        "a unique prefix matches exactly one live asset"
+    );
+    assert_eq!(matches[0].id, created.id);
+}
+
+pub async fn asset_get_by_id_prefix_absent<A: AssetRepository>(assets: &A) {
+    let matches = assets.get_by_id_prefix("zzzzzzzz").await.unwrap();
+    assert!(
+        matches.is_empty(),
+        "a non-matching prefix returns zero rows"
+    );
+}
+
+pub async fn asset_get_by_id_prefix_wildcards_stay_literal<A: AssetRepository>(assets: &A) {
+    let _ = assets
+        .create(make_asset_request("Wildcard specimen", "content"), "user1")
+        .await
+        .unwrap();
+    // A bare % or _ must stay LITERAL (escaped), never a wildcard — a bare
+    // "%" must never become a full-table scan.
+    let matches = assets.get_by_id_prefix("%").await.unwrap();
+    assert!(matches.is_empty(), "a bare % is literal, never a wildcard");
+    let matches = assets.get_by_id_prefix("_").await.unwrap();
+    assert!(matches.is_empty(), "a bare _ is literal, never a wildcard");
+}
+
 pub async fn asset_update<A: AssetRepository>(assets: &A) {
     let created = assets
         .create(make_asset_request("Original", "Original content"), "user1")

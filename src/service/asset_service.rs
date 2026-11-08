@@ -159,6 +159,47 @@ impl AssetService {
         services.assets().get_by_id(id).await
     }
 
+    /// Git-style prefix resolution on by-id READ paths (issue e9478d91):
+    /// a well-formed UUID resolves directly (never a scan); a valid-hex id
+    /// shorter than 36 chars that is a UNIQUE prefix of exactly one live
+    /// asset resolves to it (case-insensitive — the response id is the
+    /// canonical stored form); zero matches stay a body-bearing 404 (honest
+    /// absence); ≥2 matches answer 409 AMBIGUOUS_PREFIX with the match
+    /// count + the minimum sufficient length hint; malformed (non-hex, or
+    /// ≥36 chars that isn't a valid UUID) answers 422 MALFORMED_ID — a
+    /// caller transcription error is never masked as absent. MUTATIONS STAY
+    /// FULL-UUID: only READ paths call this — update/delete/tag writes keep
+    /// the strict get_by_id path.
+    pub async fn resolve(services: &Services, id: &str) -> Result<Asset> {
+        if uuid::Uuid::parse_str(id).is_ok() {
+            return services.assets().get_by_id(id).await;
+        }
+        if !is_hex_prefix_shape(id) {
+            return Err(ApiError::MalformedId(format!(
+                "entity ids are UUIDs (or a unique hex prefix), got: {}",
+                id
+            )));
+        }
+        let matches = services.assets().get_by_id_prefix(id).await?;
+        match matches.len() {
+            1 => Ok(matches.into_iter().next().expect("exactly one match")),
+            0 => Err(ApiError::NotFound(format!("Asset not found: {}", id))),
+            _ => {
+                let count = matches.len();
+                let hint = min_sufficient_prefix_len(&matches);
+                let count_str = if count >= 51 {
+                    "50+".to_string()
+                } else {
+                    count.to_string()
+                };
+                Err(ApiError::AmbiguousPrefix(format!(
+                    "{} matches {} live assets - use at least {} characters (or the full UUID)",
+                    id, count_str, hint
+                )))
+            }
+        }
+    }
+
     /// Update an asset
     pub async fn update(
         services: &Services,
@@ -643,4 +684,31 @@ mod born_empty_guard_tests {
         assert_eq!(ctx.visibility, "team");
         assert_eq!(ctx.owner_groups, groups(&["developers"]));
     }
+}
+
+/// Hex-prefix shape (issue e9478d91): non-empty, shorter than a full UUID,
+/// every char an ASCII hex digit. Anything else on a by-id READ path is a
+/// malformed id (422), never a prefix probe.
+fn is_hex_prefix_shape(id: &str) -> bool {
+    !id.is_empty() && id.len() < 36 && id.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Minimum sufficient prefix length (issue e9478d91 guard 2): the length at
+/// which the matched ids DIVERGE — the longest common prefix among all
+/// matches, plus one. A prefix shorter than this still matches ≥2 assets.
+fn min_sufficient_prefix_len(matches: &[Asset]) -> usize {
+    let first = matches[0].id.as_bytes();
+    let mut lcp = matches[0].id.len();
+    for a in &matches[1..] {
+        let bytes = a.id.as_bytes();
+        let mut i = 0;
+        while i < lcp && i < bytes.len() && first[i] == bytes[i] {
+            i += 1;
+        }
+        lcp = i;
+        if lcp == 0 {
+            break;
+        }
+    }
+    lcp + 1
 }

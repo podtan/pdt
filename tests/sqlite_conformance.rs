@@ -77,6 +77,24 @@ async fn sqlite_asset_get_by_id_not_found() {
 }
 
 #[tokio::test]
+async fn sqlite_asset_get_by_id_prefix_resolves_unique() {
+    let (assets, _, _, _, _) = setup_repos().await;
+    common::asset_get_by_id_prefix_resolves_unique(&assets).await;
+}
+
+#[tokio::test]
+async fn sqlite_asset_get_by_id_prefix_absent() {
+    let (assets, _, _, _, _) = setup_repos().await;
+    common::asset_get_by_id_prefix_absent(&assets).await;
+}
+
+#[tokio::test]
+async fn sqlite_asset_get_by_id_prefix_wildcards_stay_literal() {
+    let (assets, _, _, _, _) = setup_repos().await;
+    common::asset_get_by_id_prefix_wildcards_stay_literal(&assets).await;
+}
+
+#[tokio::test]
 async fn sqlite_asset_update() {
     let (assets, _, _, _, _) = setup_repos().await;
     common::asset_update(&assets).await;
@@ -1000,4 +1018,148 @@ mod adopt_guards {
         );
         let _ = std::marker::PhantomData::<CreateAssetRequest>;
     }
+}
+
+// ============================================================================
+// SHORT-ID PREFIX RESOLUTION (issue e9478d91) — service-level pins
+// ============================================================================
+
+#[tokio::test]
+async fn sqlite_resolve_unique_prefix_serves_canonical_row() {
+    let (assets, rel, col, aud, grp) = setup_repos().await;
+    let created = assets
+        .create(
+            pdt::models::CreateAssetRequest {
+                title: "Prefix specimen".to_string(),
+                content: Some("content".to_string()),
+                tags: vec![],
+                metadata: std::collections::HashMap::new(),
+                auth_context: None,
+            },
+            "user1",
+        )
+        .await
+        .unwrap();
+    let prefix = created.id[..8].to_string();
+    let services = pdt::service::Services::from_repositories(assets, rel, col, aud, grp);
+    let resolved = pdt::service::AssetService::resolve(&services, &prefix)
+        .await
+        .expect("unique prefix resolves");
+    assert_eq!(
+        resolved.id, created.id,
+        "the response id is the canonical stored form"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_resolve_ambiguous_prefix_answers_409_with_count_and_hint() {
+    let pool = setup_sqlite().await;
+    // Two crafted ids sharing a long prefix — impossible with random UUIDs,
+    // so the rows are seeded directly.
+    for tail in [
+        "00000000000000000000000000000001",
+        "00000000000000000000000000000002",
+    ] {
+        sqlx::query(
+            "INSERT INTO assets (id, title, content, created_at, updated_at, created_by, updated_by, deleted_at, visibility, confidentiality, owner_groups)
+             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'team', '', '[]')",
+        )
+        .bind(format!("aaaa0000-0000-0000-0000-{}", tail))
+        .bind("Ambiguous specimen")
+        .bind("")
+        .bind("2026-11-08T00:00:00+00:00")
+        .bind("2026-11-08T00:00:00+00:00")
+        .bind("user1")
+        .bind("user1")
+        .execute(&pool)
+        .await
+        .expect("seed row");
+    }
+    let assets = pdt::repository::SqliteAssetRepository::new(pool.clone());
+    let services = pdt::service::Services::from_repositories(
+        assets,
+        pdt::repository::SqliteRelationRepository::new(pool.clone()),
+        pdt::repository::SqliteCollectionRepository::new(pool.clone()),
+        pdt::repository::SqliteAuditRepository::new(pool.clone()),
+        pdt::repository::SqliteGroupRepository::new(pool),
+    );
+    let err = pdt::service::AssetService::resolve(&services, "aaaa0000")
+        .await
+        .expect_err("ambiguous prefix answers 409");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("2 live assets"),
+        "the body carries the match count: {msg}"
+    );
+    assert!(
+        msg.contains("use at least"),
+        "the body carries the min-length hint: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_resolve_malformed_non_hex_answers_422() {
+    let (assets, rel, col, aud, grp) = setup_repos().await;
+    let services = pdt::service::Services::from_repositories(assets, rel, col, aud, grp);
+    let err = pdt::service::AssetService::resolve(&services, "ghost-id")
+        .await
+        .expect_err("non-hex id answers 422, never a lying 404");
+    assert!(
+        err.to_string().contains("Malformed id"),
+        "the id-format error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_resolve_uppercase_prefix_resolves_case_insensitively() {
+    let (assets, _, _, _, _) = setup_repos().await;
+    let created = assets
+        .create(
+            pdt::models::CreateAssetRequest {
+                title: "Case specimen".to_string(),
+                content: Some("content".to_string()),
+                tags: vec![],
+                metadata: std::collections::HashMap::new(),
+                auth_context: None,
+            },
+            "user1",
+        )
+        .await
+        .unwrap();
+    let prefix = created.id[..8].to_uppercase();
+    let matches = assets.get_by_id_prefix(&prefix).await.unwrap();
+    assert_eq!(
+        matches.len(),
+        1,
+        "uppercase input resolves (case-insensitive)"
+    );
+    assert_eq!(matches[0].id, created.id, "the response id stays canonical");
+}
+
+#[tokio::test]
+async fn sqlite_resolve_prefix_is_tenancy_scoped_cross_band_404() {
+    // The tenancy mask applies to prefix queries (security-adjacent, tested
+    // explicitly): an asset created in store A is unreachable by prefix
+    // from store B — the prefix query scans the tenant's own DB only.
+    let (assets_a, _, _, _, _) = setup_repos().await;
+    let (assets_b, _, _, _, _) = setup_repos().await;
+    let created = assets_a
+        .create(
+            pdt::models::CreateAssetRequest {
+                title: "Band A specimen".to_string(),
+                content: Some("content".to_string()),
+                tags: vec![],
+                metadata: std::collections::HashMap::new(),
+                auth_context: None,
+            },
+            "user1",
+        )
+        .await
+        .unwrap();
+    let prefix = created.id[..8].to_string();
+    let matches = assets_b.get_by_id_prefix(&prefix).await.unwrap();
+    assert!(
+        matches.is_empty(),
+        "a cross-band prefix is absent in store B — 404, never a bypass"
+    );
 }

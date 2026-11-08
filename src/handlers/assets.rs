@@ -162,7 +162,9 @@ pub async fn get_asset(
     user: AuthenticatedUser,
     Path(id): Path<String>,
 ) -> Result<Json<Asset>> {
-    let asset = AssetService::get(tx.services(), &id).await?;
+    // Prefix-resolving read (issue e9478d91): a unique short id resolves to
+    // the asset; mutations keep the strict full-uuid path.
+    let asset = AssetService::resolve(tx.services(), &id).await?;
 
     // Cedar enforcement: skip if no authorizer or asset has no auth_context
     if let Some(authorizer) = tx.authorizer() {

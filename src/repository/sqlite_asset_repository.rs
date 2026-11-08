@@ -250,6 +250,26 @@ impl AssetRepository for SqliteAssetRepository {
         self.hydrate_asset(&row).await
     }
 
+    async fn get_by_id_prefix(&self, prefix: &str) -> Result<Vec<Asset>> {
+        // Escape LIKE wildcards so a caller-supplied % or _ stays literal —
+        // a bare "%" must never become a full-table scan.
+        let escaped = prefix
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("{}%", escaped);
+        let rows = sqlx::query_as::<_, AssetRow>(
+            "SELECT id, title, content, created_at, updated_at, created_by, updated_by, deleted_at, visibility, confidentiality, owner_groups
+             FROM assets WHERE id LIKE ? ESCAPE '\\' AND deleted_at IS NULL ORDER BY id LIMIT 51",
+        )
+        .bind(pattern)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ApiError::GenericDatabase(e.to_string()))?;
+
+        self.hydrate_assets(rows).await
+    }
+
     async fn update(&self, id: &str, request: UpdateAssetRequest, user_id: &str) -> Result<Asset> {
         let now = Utc::now().to_rfc3339();
 

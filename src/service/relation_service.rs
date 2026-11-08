@@ -4,6 +4,7 @@ use serde_json::json;
 
 use crate::error::{ApiError, Result};
 use crate::models::{AuditAction, CreateRelationRequest, Relation};
+use crate::service::AssetService;
 use crate::service::Services;
 
 /// Service for relation business logic
@@ -109,10 +110,11 @@ impl RelationService {
 
     /// Get all relations for an asset
     pub async fn get_asset_relations(services: &Services, asset_id: &str) -> Result<Vec<Relation>> {
-        // Verify asset exists
-        services.assets().get_by_id(asset_id).await?;
+        // Prefix-resolving read (issue e9478d91): a unique short id resolves
+        // to the asset; the relations query uses the RESOLVED id.
+        let asset = AssetService::resolve(services, asset_id).await?;
 
-        services.relations().get_asset_relations(asset_id).await
+        services.relations().get_asset_relations(&asset.id).await
     }
 
     /// Traverse the relationship graph
@@ -121,12 +123,13 @@ impl RelationService {
         asset_id: &str,
         max_depth: u32,
     ) -> Result<Vec<GraphNode>> {
-        // Verify asset exists
-        services.assets().get_by_id(asset_id).await?;
+        // Prefix-resolving read (issue e9478d91): a unique short id resolves
+        // to the asset; the traversal uses the RESOLVED id.
+        let asset = AssetService::resolve(services, asset_id).await?;
 
         let traversal = services
             .relations()
-            .traverse_graph(asset_id, max_depth)
+            .traverse_graph(&asset.id, max_depth)
             .await?;
 
         let nodes = traversal
