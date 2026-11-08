@@ -59,7 +59,7 @@ use crate::cedar::enforcement::{AppRawState, TenantState};
 use crate::error::{ApiError, Result};
 use crate::models::roles::GLOBAL_ROLE_ADMIN;
 use crate::service::directory_service::DirectoryService;
-use crate::service::prune_policy::{PrunePolicy, PruneVerdict};
+use crate::service::prune_policy::{Disposition, PrunePolicy, PruneVerdict};
 use crate::service::roles_service::RolesService;
 use crate::service::AssetService;
 use crate::service::AuditService;
@@ -392,8 +392,41 @@ pub async fn audit_prune(
             "policy_verdict".to_string(),
             serde_json::Value::String(verdict),
         );
+        // v0.3.32 (issue 2240beac): the STAGED audit-entries window rides the
+        // dry-run — the console modal's prefill source (the honest-surface
+        // law: the modal prefills the policy of record, never a spec-era
+        // default). Absent section = the fields stay absent (the UI keeps
+        // its labeled fallback).
+        insert_policy_window_fields(&mut body, &policy);
     }
     Ok(Json(serde_json::Value::Object(body)))
+}
+
+/// v0.3.32 (issue 2240beac): the staged audit-entries window + disposition —
+/// the dry-run response fields the console modal prefills from. Absent
+/// section = the fields stay absent (the UI keeps its labeled fallback).
+fn insert_policy_window_fields(
+    body: &mut serde_json::Map<String, serde_json::Value>,
+    policy: &Option<PrunePolicy>,
+) {
+    if let Some((window_days, disposition)) = policy.as_ref().and_then(|p| p.audit_entries_class())
+    {
+        body.insert(
+            "policy_window_days".to_string(),
+            serde_json::Value::from(window_days),
+        );
+        body.insert(
+            "policy_disposition".to_string(),
+            serde_json::Value::String(
+                match disposition {
+                    Disposition::Archive => "archive",
+                    Disposition::SoftDelete => "soft_delete",
+                    Disposition::ArchiveThenDelete => "archive_then_delete",
+                }
+                .to_string(),
+            ),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -449,5 +482,46 @@ mod prune_gate_tests {
         // A lookalike role string never widens access.
         assert!(!admin_allowed(&["Admin".to_string()], Some("user")));
         assert!(!admin_allowed(&["administrator".to_string()], None));
+    }
+
+    /// Regression pin (issue 2240beac): the dry-run response carries the
+    /// STAGED audit-entries window — the console modal's prefill source (the
+    /// honest-surface law: the modal prefills the policy of record, never a
+    /// spec-era default). Absent section = the fields stay absent (the UI
+    /// keeps its labeled fallback).
+    #[test]
+    fn dry_run_response_carries_the_staged_policy_window() {
+        use super::insert_policy_window_fields;
+        use crate::service::prune_policy::PrunePolicy;
+
+        let endorsed =
+            r#"{"audit_entries": {"window_days": 30, "disposition": "archive_then_delete"}}"#;
+        let policy: Option<PrunePolicy> = Some(serde_json::from_str(endorsed).expect("parses"));
+        let mut body = serde_json::Map::new();
+        insert_policy_window_fields(&mut body, &policy);
+        assert_eq!(
+            body.get("policy_window_days"),
+            Some(&serde_json::Value::from(30)),
+            "the staged window must ride the dry-run — the modal prefills the policy \
+             of record (issue 2240beac)"
+        );
+        assert_eq!(
+            body.get("policy_disposition"),
+            Some(&serde_json::Value::String("archive_then_delete".into())),
+        );
+
+        // Absent section → the fields stay absent (the labeled fallback case).
+        let no_section: Option<PrunePolicy> = Some(serde_json::from_str("{}").expect("parses"));
+        let mut body2 = serde_json::Map::new();
+        insert_policy_window_fields(&mut body2, &no_section);
+        assert!(
+            body2.get("policy_window_days").is_none() && body2.get("policy_disposition").is_none(),
+            "no policy section = no window fields — the UI keeps its labeled fallback"
+        );
+
+        // No policy at all → the fields stay absent.
+        let mut body3 = serde_json::Map::new();
+        insert_policy_window_fields(&mut body3, &None);
+        assert!(body3.get("policy_window_days").is_none());
     }
 }

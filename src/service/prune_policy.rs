@@ -219,6 +219,16 @@ impl PrunePolicy {
             }
         }
     }
+
+    /// The staged audit-entries class as wire fields — the UI prefill source
+    /// (issue 2240beac): the console modal prefills the policy of record,
+    /// never a spec-era default. None when the section is absent (the UI
+    /// keeps its labeled fallback — "spec default, not staged").
+    pub fn audit_entries_class(&self) -> Option<(u32, Disposition)> {
+        self.audit_entries
+            .as_ref()
+            .map(|e| (e.window_days, e.disposition))
+    }
 }
 
 #[cfg(test)]
