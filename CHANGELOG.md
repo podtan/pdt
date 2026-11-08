@@ -5,6 +5,20 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.32] — 2026-11-08
+
+### Added — the dry-run response carries the STAGED audit-entries window (issue 2240beac)
+
+- The audit-prune dry-run response gains `policy_window_days` +
+  `policy_disposition` — the staged `audit_entries` class from
+  PDT_PRUNE_POLICY_PATH, read at invocation (data, not code). The console
+  modal's prefill source (the honest-surface law, farzan's fix shape):
+  the modal prefills the policy of record, never a spec-era default.
+  Absent section = the fields stay absent (the UI keeps its labeled
+  fallback). Execution responses unchanged; dry-run only.
+- Regression pin: `dry_run_response_carries_the_staged_policy_window`
+  (the endorsed 30d shape + the absent-section fallback case).
+
 ## [0.3.31] — 2026-11-07
 
 ### Fixed — the audit-prune EXECUTION walk's per-chunk re-scan (issue 2c71e4e6) + the 002_groups restart 500-window (singleflight)
