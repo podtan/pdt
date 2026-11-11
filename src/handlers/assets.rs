@@ -12,8 +12,8 @@ use crate::auth::{AuthenticatedUser, Enrichment};
 use crate::cedar::enforcement::TenantState;
 use crate::error::{ApiError, Result};
 use crate::models::{
-    AddTagRequest, AdoptAssetRequest, Asset, CreateAssetRequest, PaginatedResponse, Tag,
-    UpdateAssetRequest, UpdateAuthContextRequest,
+    AddTagRequest, AdoptAssetRequest, Asset, CreateAssetRequest, MergeMetadataRequest,
+    PaginatedResponse, Tag, UpdateAssetRequest, UpdateAuthContextRequest,
 };
 use crate::service::AssetService;
 
@@ -231,6 +231,57 @@ pub async fn update_asset(
     }
 
     let asset = AssetService::update(tx.services(), &id, request, user_id).await?;
+    Ok(Json(asset))
+}
+
+/// Merge metadata keys into an asset — the delta-write surface (issue
+/// a5daf31d). UPSERT per key, never a full-map replace: the keys the caller
+/// does not send are untouched, so a concurrent writer's keys survive. The
+/// runtime state report (observed_state + last_synced_at) is the first
+/// consumer — its heartbeat must never clobber a concurrent profile edit.
+#[utoipa::path(
+    patch,
+    path = "/api/assets/{id}/metadata",
+    params(
+        ("id" = String, Path, description = "Asset ID"),
+    ),
+    request_body = MergeMetadataRequest,
+    responses(
+        (status = 200, description = "Metadata keys merged successfully", body = Asset),
+        (status = 404, description = "Asset not found"),
+    ),
+    tag = "assets",
+)]
+pub async fn merge_asset_metadata(
+    tx: TenantState,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+    Json(request): Json<MergeMetadataRequest>,
+) -> Result<Json<Asset>> {
+    let user_id = &user.user_id;
+
+    // Cedar enforcement on the current state of the asset — the merge IS an
+    // edit (same gate as update_asset).
+    if let Some(authorizer) = tx.authorizer() {
+        let asset = AssetService::get(tx.services(), &id).await?;
+        if crate::cedar::enforcement::should_enforce_cedar(&asset) {
+            let claims = extract_claims(&user);
+            let resolved =
+                crate::cedar::enforcement::resolve_instance_authz(tx.services(), &claims).await;
+            crate::cedar::enforcement::check_permission_resolved(
+                tx.services(),
+                authorizer,
+                &claims,
+                &resolved,
+                tx.instance_id(),
+                "Edit",
+                &asset,
+            )
+            .await?;
+        }
+    }
+
+    let asset = AssetService::merge_metadata(tx.services(), &id, request, user_id).await?;
     Ok(Json(asset))
 }
 

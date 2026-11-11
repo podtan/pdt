@@ -352,6 +352,49 @@ impl AssetRepository for SqliteAssetRepository {
         self.get_by_id(id).await
     }
 
+    /// Merge metadata keys — UPSERT per key in ONE transaction (issue
+    /// a5daf31d). Never a full-map replace: the keys the caller does not
+    /// send are untouched, so a concurrent writer's keys survive. The
+    /// (asset_id, key) primary key makes the upsert exact.
+    async fn merge_metadata(
+        &self,
+        id: &str,
+        metadata: &HashMap<String, serde_json::Value>,
+        user_id: &str,
+    ) -> Result<Asset> {
+        let now = Utc::now().to_rfc3339();
+
+        // Verify exists and not deleted (get_by_id errors on absence)
+        self.get_by_id(id).await?;
+
+        let mut tx = self.pool.begin().await?;
+
+        for (key, value) in metadata {
+            let value_json =
+                serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+            sqlx::query(
+                "INSERT INTO asset_metadata (asset_id, key, value_json) VALUES (?, ?, ?) \
+                 ON CONFLICT(asset_id, key) DO UPDATE SET value_json = excluded.value_json",
+            )
+            .bind(id)
+            .bind(key)
+            .bind(&value_json)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query("UPDATE assets SET updated_at = ?, updated_by = ? WHERE id = ? AND deleted_at IS NULL")
+            .bind(&now)
+            .bind(user_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+
+        self.get_by_id(id).await
+    }
+
     async fn soft_delete(&self, id: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         let result =

@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use axum::{
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use tower_http::{
@@ -63,6 +63,12 @@ pub fn build_router(
         .route("/api/assets/{id}", get(handlers::assets::get_asset))
         .route("/api/assets/{id}", put(handlers::assets::update_asset))
         .route("/api/assets/{id}", delete(handlers::assets::delete_asset))
+        // Metadata merge route (issue a5daf31d) — the delta-write surface:
+        // upsert per key, never a full-map replace.
+        .route(
+            "/api/assets/{id}/metadata",
+            patch(handlers::assets::merge_asset_metadata),
+        )
         .route("/api/assets/{id}/tags", post(handlers::assets::add_tag))
         .route(
             "/api/assets/{id}/tags/{tag_id}",

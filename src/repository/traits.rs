@@ -30,6 +30,18 @@ pub trait AssetRepository: Send + Sync {
     /// Update an asset's mutable fields.
     async fn update(&self, id: &str, request: UpdateAssetRequest, user_id: &str) -> Result<Asset>;
 
+    /// Merge metadata keys into an asset — UPSERT per key, never a full-map
+    /// replace (issue a5daf31d). The delta-write surface: a writer that owns
+    /// a FEW keys (the runtime state report owns observed_state +
+    /// last_synced_at) must never delete the keys it does not own. The full
+    /// replace stays `update`'s contract.
+    async fn merge_metadata(
+        &self,
+        id: &str,
+        metadata: &HashMap<String, serde_json::Value>,
+        user_id: &str,
+    ) -> Result<Asset>;
+
     /// Soft delete an asset.
     async fn soft_delete(&self, id: &str) -> Result<()>;
 

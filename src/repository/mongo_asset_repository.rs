@@ -222,6 +222,37 @@ impl AssetRepository for MongoAssetRepository {
         self.get_by_id(id).await
     }
 
+    /// Merge metadata keys — `$set` per dotted key (issue a5daf31d). Never a
+    /// full-map replace: `metadata.{k}` upserts each key in place, the keys
+    /// the caller does not send are untouched.
+    async fn merge_metadata(
+        &self,
+        id: &str,
+        metadata: &HashMap<String, serde_json::Value>,
+        user_id: &str,
+    ) -> Result<Asset> {
+        let mut update_doc = doc! {
+            "$set": {
+                "updated_at": Utc::now(),
+                "updated_by": user_id
+            }
+        };
+        let set = update_doc.get_document_mut("$set").unwrap();
+        for (key, value) in metadata {
+            let value_bson = bson::to_bson(value)?;
+            set.insert(format!("metadata.{key}"), value_bson);
+        }
+
+        let filter = doc! {
+            "_id": id,
+            "deleted_at": { "$exists": false }
+        };
+
+        self.db.assets().update_one(filter, update_doc).await?;
+
+        self.get_by_id(id).await
+    }
+
     async fn soft_delete(&self, id: &str) -> Result<()> {
         let filter = doc! {
             "_id": id,

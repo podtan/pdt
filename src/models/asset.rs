@@ -97,6 +97,15 @@ pub struct UpdateAssetRequest {
     pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
+/// Request to MERGE metadata keys into an asset (issue a5daf31d) — upsert
+/// per key, never a full-map replace. The delta-write surface for writers
+/// that own a few keys (the runtime state report owns observed_state +
+/// last_synced_at); keys not in the request are untouched.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct MergeMetadataRequest {
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
 /// Request to update the authorization context of an asset
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct UpdateAuthContextRequest {

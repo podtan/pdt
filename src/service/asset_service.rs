@@ -5,8 +5,8 @@ use serde_json::json;
 
 use crate::error::{ApiError, Result};
 use crate::models::{
-    AddTagRequest, AdoptAssetRequest, Asset, AuditAction, AuthContext, CreateAssetRequest, Tag,
-    UpdateAssetRequest, UpdateAuthContextRequest,
+    AddTagRequest, AdoptAssetRequest, Asset, AuditAction, AuthContext, CreateAssetRequest,
+    MergeMetadataRequest, Tag, UpdateAssetRequest, UpdateAuthContextRequest,
 };
 use crate::service::Services;
 
@@ -381,6 +381,40 @@ impl AssetService {
             .await?;
 
         Ok(())
+    }
+
+    /// Merge metadata keys into an asset — the delta-write surface (issue
+    /// a5daf31d). UPSERT per key via the repository's merge_metadata; the
+    /// keys the caller does not send are untouched, so a concurrent writer's
+    /// keys survive. The audit entry names the merged keys only.
+    pub async fn merge_metadata(
+        services: &Services,
+        id: &str,
+        request: MergeMetadataRequest,
+        user_id: &str,
+    ) -> Result<Asset> {
+        let asset = services
+            .assets()
+            .merge_metadata(id, &request.metadata, user_id)
+            .await?;
+
+        // Create audit entry — merged KEYS only, never values (values may
+        // carry credential-shaped material).
+        services
+            .audit()
+            .create(
+                "asset",
+                id,
+                AuditAction::Update,
+                json!({
+                    "merge": true,
+                    "keys": request.metadata.keys().collect::<Vec<_>>(),
+                }),
+                user_id,
+            )
+            .await?;
+
+        Ok(asset)
     }
 
     /// Update the authorization context of an asset
