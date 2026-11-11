@@ -307,6 +307,15 @@ impl TenantPoolManager {
         // Create connection pool
         let pool = SqlitePoolOptions::new()
             .max_connections(INSTANCE_POOL_MAX_CONN)
+            // Pool hygiene (issue b32a486b): a pooled connection stuck in
+            // a stale WAL-snapshot state (leaked transaction from a
+            // DATABASE_ERROR storm) serves pre-edit reads until process
+            // restart — the Eynak leaf's ~1-in-3-writes revert signature
+            // matches one stuck connection in this 3-conn pool. max_lifetime
+            // recycles it within 30 min; idle_timeout reaps never-reused
+            // idle connections after 5 min — the class self-heals.
+            .max_lifetime(std::time::Duration::from_secs(1800))
+            .idle_timeout(std::time::Duration::from_secs(300))
             .connect_with(
                 SqliteConnectOptions::new()
                     .filename(db_path)

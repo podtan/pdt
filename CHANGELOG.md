@@ -5,6 +5,25 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.34] — 2026-11-11
+
+### Fixed — the asset update path is atomic + pool hygiene (issue b32a486b, Eynak leaf store distress)
+
+- The asset update (title + content + the metadata DELETE-then-INSERT
+  replace + the updated_at bump) now runs in ONE transaction. Across
+  separate pooled connections two concurrent updates used to interleave —
+  one writer's DELETE landed after the other's INSERTs and silently
+  reverted it (the lost-update class the Eynak leaf's thq state-report
+  heartbeats hit ~1-in-3-writes, reverting profile edits every ~3-6 min).
+  Writers now serialize; the whole update commits or rolls back together.
+- Pool hygiene on both pool sites (global + per-instance): max_lifetime
+  30 min + idle_timeout 5 min. A pooled connection stuck in a stale
+  WAL-snapshot state (the suspected frozen-connection stale-read root)
+  now recycles within 30 min instead of serving pre-edit reads until
+  process restart — the class self-heals.
+- Regression test: concurrent metadata updates never interleave (the
+  final metadata state is always exactly one writer's complete set).
+
 ## [0.3.33] — 2026-11-08
 
 ### Added — git-style short-id prefix resolution on by-id READ paths (issue e9478d91)

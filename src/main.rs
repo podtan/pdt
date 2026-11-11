@@ -74,6 +74,15 @@ async fn main() -> anyhow::Result<()> {
 
             let pool = sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(5)
+                // Pool hygiene (issue b32a486b): a pooled connection that
+                // ends up in a stale WAL-snapshot state (leaked transaction
+                // from a DATABASE_ERROR storm) serves pre-edit reads until
+                // process restart. max_lifetime recycles such a connection
+                // within 30 min of first use; idle_timeout reaps never-
+                // reused idle connections after 5 min — the class self-
+                // heals instead of persisting.
+                .max_lifetime(std::time::Duration::from_secs(1800))
+                .idle_timeout(std::time::Duration::from_secs(300))
                 .connect_with(
                     sqlx::sqlite::SqliteConnectOptions::new()
                         .filename(db_path)

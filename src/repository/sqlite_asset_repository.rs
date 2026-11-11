@@ -276,6 +276,15 @@ impl AssetRepository for SqliteAssetRepository {
         // Verify exists and not deleted
         let existing = self.get_by_id(id).await?;
 
+        // ONE transaction: title + content + metadata + updated_at bump
+        // (issue b32a486b). The metadata replace is DELETE-then-INSERT —
+        // across separate pooled connections two concurrent updates
+        // interleave (one writer's DELETE lands after the other's INSERTs
+        // and silently reverts it — the lost-update class the Eynak leaf
+        // heartbeats hit). The transaction serializes writers and commits
+        // or rolls the whole update back together.
+        let mut tx = self.pool.begin().await?;
+
         // Update title
         if let Some(ref title) = request.title {
             sqlx::query("UPDATE assets SET title = ?, updated_at = ?, updated_by = ? WHERE id = ? AND deleted_at IS NULL")
@@ -283,7 +292,7 @@ impl AssetRepository for SqliteAssetRepository {
                 .bind(&now)
                 .bind(user_id)
                 .bind(id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
         }
 
@@ -294,7 +303,7 @@ impl AssetRepository for SqliteAssetRepository {
                 .bind(&now)
                 .bind(user_id)
                 .bind(id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
         }
 
@@ -303,7 +312,7 @@ impl AssetRepository for SqliteAssetRepository {
             // Clear existing metadata
             sqlx::query("DELETE FROM asset_metadata WHERE asset_id = ?")
                 .bind(id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
 
             // Insert new metadata
@@ -316,7 +325,7 @@ impl AssetRepository for SqliteAssetRepository {
                 .bind(id)
                 .bind(key)
                 .bind(&value_json)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
             }
 
@@ -324,7 +333,7 @@ impl AssetRepository for SqliteAssetRepository {
                 .bind(&now)
                 .bind(user_id)
                 .bind(id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
         }
 
@@ -334,9 +343,11 @@ impl AssetRepository for SqliteAssetRepository {
                 .bind(&now)
                 .bind(user_id)
                 .bind(id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
         }
+
+        tx.commit().await?;
 
         self.get_by_id(id).await
     }

@@ -7,9 +7,12 @@
 
 mod common;
 
+use std::collections::HashMap;
+
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
+use pdt::models::UpdateAssetRequest;
 use pdt::repository::{
     AssetRepository, RelationRepository, SqliteAssetRepository, SqliteAuditRepository,
     SqliteCollectionRepository, SqliteGroupRepository, SqliteRelationRepository,
@@ -164,6 +167,91 @@ async fn sqlite_asset_add_and_remove_tag() {
 async fn sqlite_asset_update_auth_context() {
     let (assets, _, _, _, _) = setup_repos().await;
     common::asset_update_auth_context(&assets).await;
+}
+
+/// Regression (issue b32a486b): the metadata replace is DELETE-then-INSERT —
+/// across separate pooled connections two concurrent updates used to
+/// interleave (one writer's DELETE landing after the other's INSERTs,
+/// silently reverting it — the lost-update class the Eynak leaf heartbeats
+/// hit ~1-in-3-writes). The update now runs in ONE transaction: writers
+/// serialize and the final metadata state is always exactly ONE writer's
+/// complete set — never mixed, never partial.
+#[tokio::test]
+async fn sqlite_asset_concurrent_metadata_updates_never_interleave() {
+    // A multi-connection pool on a SHARED file-backed db (the conformance
+    // setup pins max_connections(1) — that would serialize trivially; and
+    // :memory: gives each connection its own private db). WAL + file = the
+    // prod shape.
+    let db_path = std::env::temp_dir().join(format!(
+        "pdt-interleave-test-{}-{}.db",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    ));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true)
+                .foreign_keys(true)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal),
+        )
+        .await
+        .expect("failed to connect to temp SQLite");
+
+    let migration_sql = include_str!("../migrations/sqlite/001_initial.sql");
+    sqlx::raw_sql(migration_sql)
+        .execute(&pool)
+        .await
+        .expect("failed to run migrations");
+    let groups_sql = include_str!("../migrations/sqlite/002_groups.sql");
+    sqlx::raw_sql(groups_sql)
+        .execute(&pool)
+        .await
+        .expect("failed to run groups migrations");
+
+    let assets = SqliteAssetRepository::new(pool.clone());
+    let created = assets
+        .create(common::make_asset_request("Racer", "content"), "user1")
+        .await
+        .unwrap();
+
+    let mk = |k: &str, v: i64| UpdateAssetRequest {
+        title: None,
+        content: None,
+        metadata: Some(HashMap::from([(k.to_string(), serde_json::json!(v))])),
+    };
+
+    // 25 rounds of concurrent metadata replaces: each round the final
+    // metadata must be EXACTLY one writer's complete set — never mixed
+    // (both keys), never partial (zero rows), never a stale value.
+    for round in 0..25i64 {
+        let ra = assets.update(&created.id, mk("writer_a", round), "userA");
+        let rb = assets.update(&created.id, mk("writer_b", round), "userB");
+        let (ra, rb) = tokio::join!(ra, rb);
+        ra.expect("concurrent update A should succeed");
+        rb.expect("concurrent update B should succeed");
+
+        let final_asset = assets.get_by_id(&created.id).await.unwrap();
+        assert_eq!(
+            final_asset.metadata.len(),
+            1,
+            "round {round}: metadata must hold exactly ONE writer's key, got {:?}",
+            final_asset.metadata
+        );
+        let (_key, value) = final_asset.metadata.iter().next().unwrap();
+        assert_eq!(
+            value.as_i64(),
+            Some(round),
+            "round {round}: the surviving write must carry THIS round's value, got {:?}",
+            value
+        );
+    }
+
+    pool.close().await;
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
 }
 
 // ============================================================================
