@@ -370,8 +370,7 @@ impl AssetRepository for SqliteAssetRepository {
         let mut tx = self.pool.begin().await?;
 
         for (key, value) in metadata {
-            let value_json =
-                serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+            let value_json = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
             sqlx::query(
                 "INSERT INTO asset_metadata (asset_id, key, value_json) VALUES (?, ?, ?) \
                  ON CONFLICT(asset_id, key) DO UPDATE SET value_json = excluded.value_json",
@@ -383,12 +382,14 @@ impl AssetRepository for SqliteAssetRepository {
             .await?;
         }
 
-        sqlx::query("UPDATE assets SET updated_at = ?, updated_by = ? WHERE id = ? AND deleted_at IS NULL")
-            .bind(&now)
-            .bind(user_id)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE assets SET updated_at = ?, updated_by = ? WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(&now)
+        .bind(user_id)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
 

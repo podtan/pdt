@@ -5,6 +5,23 @@ All notable changes to PDT are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.36] — 2026-11-11
+
+### Fixed — metadata deltas in the update audit trail (issue 3a4ccaf0, forensics gap)
+
+- The asset UPDATE audit entry now carries the metadata delta: the
+  full-map metadata replace (DELETE-then-INSERT) was invisible in
+  changes_json — a metadata-only update read as a no-op (old==new null on
+  both fields) and a credentials-block wipe left no trace. The delta names
+  added/removed/changed KEYS — never values (values may carry
+  credential-shaped material; the merge endpoint's audit discipline,
+  a5daf31d).
+- Title/content-only updates carry no metadata block — the entry shape is
+  unchanged for them.
+- Regression test: metadata update audits the key delta (added/changed
+  arms, the 4-field key-lists-only shape, the value-leak guard, and the
+  no-metadata-block shape for title/content-only updates).
+
 ## [0.3.34] — 2026-11-11
 
 ### Fixed — the asset update path is atomic + pool hygiene (issue b32a486b, Eynak leaf store distress)

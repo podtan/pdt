@@ -254,6 +254,171 @@ async fn sqlite_asset_concurrent_metadata_updates_never_interleave() {
     let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
 }
 
+/// Regression (issue 3a4ccaf0): the update path's full-map metadata replace
+/// was invisible in the audit trail — a metadata-only update read as a
+/// no-op (old==new null on both fields) and a credentials-block wipe left
+/// no trace. The audit entry now carries the metadata delta as KEY-LEVEL
+/// added/removed/changed lists — never values (values may carry
+/// credential-shaped material — the Eynak mcp_credentials blocks).
+#[tokio::test]
+async fn sqlite_asset_metadata_update_audits_key_delta() {
+    use pdt::models::AuditAction;
+    use pdt::service::{AssetService, AuditService, Services};
+
+    let services = {
+        let (assets, relations, collections, audit, groups) = setup_repos().await;
+        Services::from_repositories(assets, relations, collections, audit, groups)
+    };
+    let user = "user1";
+    let created = AssetService::create(
+        &services,
+        common::make_asset_request("Audited", "body"),
+        user,
+        &[],
+    )
+    .await
+    .expect("seed asset");
+
+    // Metadata-only update on an asset with NO metadata: both keys added.
+    let req = UpdateAssetRequest {
+        title: None,
+        content: None,
+        metadata: Some(HashMap::from([
+            (
+                "mcp_credentials".to_string(),
+                serde_json::json!({"tok": "secret-shape"}),
+            ),
+            ("mode".to_string(), serde_json::json!("flipped")),
+        ])),
+    };
+    AssetService::update(&services, &created.id, req, user)
+        .await
+        .expect("metadata-only update");
+
+    let history = AuditService::get_asset_history(&services, &created.id, 10)
+        .await
+        .expect("audit history");
+    let first_meta = history
+        .iter()
+        .find(|e| {
+            e.action == AuditAction::Update
+                && e.changes
+                    .get("metadata")
+                    .and_then(|m| m.get("added"))
+                    .and_then(|a| a.as_array())
+                    .map(|a| a.len() == 2)
+                    .unwrap_or(false)
+        })
+        .expect("metadata-only update must appear in the audit trail");
+    let obj = first_meta.changes["metadata"]
+        .as_object()
+        .expect("metadata delta is an object");
+    assert_eq!(
+        obj.len(),
+        4,
+        "metadata delta carries key lists only (replace/added/removed/changed) — never values"
+    );
+    assert!(obj.contains_key("replace"));
+    assert!(obj.contains_key("added"));
+    assert!(obj.contains_key("removed"));
+    assert!(obj.contains_key("changed"));
+    let keys_of = |o: &serde_json::Map<String, serde_json::Value>, k: &str| -> Vec<String> {
+        o[k].as_array()
+            .expect("delta arm is an array")
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .expect("delta arm entries are key names")
+                    .to_string()
+            })
+            .collect()
+    };
+    let added = keys_of(obj, "added");
+    assert!(
+        added.contains(&"mcp_credentials".to_string()) && added.contains(&"mode".to_string()),
+        "added must name both new keys, got {added:?}"
+    );
+    assert!(keys_of(obj, "removed").is_empty());
+    assert!(keys_of(obj, "changed").is_empty());
+    // The value material must NOT leak into the journal.
+    let serialized = serde_json::to_string(&first_meta.changes).unwrap();
+    assert!(
+        !serialized.contains("secret-shape"),
+        "credential-shaped value leaked into the audit journal: {serialized}"
+    );
+
+    // Second update: one key changed, one added, none removed.
+    let req2 = UpdateAssetRequest {
+        title: None,
+        content: None,
+        metadata: Some(HashMap::from([
+            (
+                "mcp_credentials".to_string(),
+                serde_json::json!({"tok": "rotated"}),
+            ),
+            ("mode".to_string(), serde_json::json!("flipped")),
+            ("extra".to_string(), serde_json::json!(true)),
+        ])),
+    };
+    AssetService::update(&services, &created.id, req2, user)
+        .await
+        .expect("second metadata update");
+
+    let history2 = AuditService::get_asset_history(&services, &created.id, 10)
+        .await
+        .expect("audit history 2");
+    let second_meta = history2
+        .iter()
+        .find(|e| {
+            e.action == AuditAction::Update
+                && e.changes
+                    .get("metadata")
+                    .and_then(|m| m.get("added"))
+                    .and_then(|a| a.as_array())
+                    .map(|a| a.len() == 1)
+                    .unwrap_or(false)
+        })
+        .expect("second update's delta must appear");
+    let obj2 = second_meta.changes["metadata"]
+        .as_object()
+        .expect("metadata delta 2 is an object");
+    assert_eq!(keys_of(obj2, "added"), vec!["extra".to_string()]);
+    assert_eq!(
+        keys_of(obj2, "changed"),
+        vec!["mcp_credentials".to_string()]
+    );
+    assert!(keys_of(obj2, "removed").is_empty());
+
+    // A title/content-only update carries NO metadata block (the entry
+    // shape is unchanged for it).
+    let req3 = UpdateAssetRequest {
+        title: Some("renamed".to_string()),
+        content: None,
+        metadata: None,
+    };
+    AssetService::update(&services, &created.id, req3, user)
+        .await
+        .expect("title-only update");
+    let history3 = AuditService::get_asset_history(&services, &created.id, 10)
+        .await
+        .expect("audit history 3");
+    let title_only = history3
+        .iter()
+        .find(|e| {
+            e.action == AuditAction::Update
+                && e.changes
+                    .get("new")
+                    .and_then(|n| n.get("title"))
+                    .and_then(|t| t.as_str())
+                    == Some("renamed")
+        })
+        .expect("title-only update entry");
+    assert!(
+        title_only.changes.get("metadata").is_none(),
+        "title/content-only update must not carry a metadata block"
+    );
+}
+
 // ============================================================================
 // RELATION REPOSITORY TESTS
 // ============================================================================

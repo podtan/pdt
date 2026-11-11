@@ -223,25 +223,55 @@ impl AssetService {
             .update(id, request.clone(), user_id)
             .await?;
 
+        // Metadata delta — KEY-LEVEL only, never values (values may carry
+        // credential-shaped material — the Eynak mcp_credentials blocks are
+        // metadata values; the merge endpoint's audit discipline, a5daf31d).
+        // Issue 3a4ccaf0: the update path's full-map metadata replace was
+        // invisible in the audit trail — a metadata-only update read as a
+        // no-op (old==new null on both fields) and a credentials-block wipe
+        // left no trace. The delta names added/removed/changed keys;
+        // title/content-only updates carry no metadata block (the entry
+        // shape is unchanged for them).
+        let metadata_delta = request.metadata.as_ref().map(|new_meta| {
+            let old_meta = &old_asset.metadata;
+            let added: Vec<&String> = new_meta
+                .keys()
+                .filter(|k| !old_meta.contains_key(*k))
+                .collect();
+            let changed: Vec<&String> = new_meta
+                .iter()
+                .filter(|(k, v)| old_meta.get(*k).is_some_and(|old_v| old_v != *v))
+                .map(|(k, _)| k)
+                .collect();
+            let removed: Vec<&String> = old_meta
+                .keys()
+                .filter(|k| !new_meta.contains_key(*k))
+                .collect();
+            json!({
+                "replace": true,
+                "added": added,
+                "removed": removed,
+                "changed": changed,
+            })
+        });
+
         // Create audit entry
+        let mut changes = json!({
+            "old": {
+                "title": old_asset.title,
+                "content": old_asset.content,
+            },
+            "new": {
+                "title": request.title,
+                "content": request.content,
+            }
+        });
+        if let Some(delta) = metadata_delta {
+            changes["metadata"] = delta;
+        }
         services
             .audit()
-            .create(
-                "asset",
-                id,
-                AuditAction::Update,
-                json!({
-                    "old": {
-                        "title": old_asset.title,
-                        "content": old_asset.content,
-                    },
-                    "new": {
-                        "title": request.title,
-                        "content": request.content,
-                    }
-                }),
-                user_id,
-            )
+            .create("asset", id, AuditAction::Update, changes, user_id)
             .await?;
 
         Ok(asset)
