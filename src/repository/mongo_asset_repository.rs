@@ -9,8 +9,8 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::error::{ApiError, Result};
 use crate::models::{
-    AddTagRequest, Asset, AuditAction, AuditEntry, AuthContext, CreateAssetRequest, Tag,
-    UpdateAssetRequest,
+    AddTagRequest, Asset, AuditAction, AuditEntry, AuthContext, CreateAssetRequest,
+    SearchIndexDrift, Tag, UpdateAssetRequest,
 };
 use crate::repository::traits::AssetRepository;
 
@@ -607,5 +607,27 @@ impl AssetRepository for MongoAssetRepository {
             }
         }
         Ok(out)
+    }
+
+    async fn reconcile_search_index(
+        &self,
+        _repair: bool,
+        _sample_limit: u32,
+    ) -> Result<SearchIndexDrift> {
+        // Mongo has NO derived text index — every search queries the
+        // documents live, so the index-vs-store drift class cannot exist
+        // here. The contract holds by construction; the report is the
+        // zeroed shape (repaired=false — nothing was repaired because
+        // nothing can drift).
+        Ok(SearchIndexDrift {
+            indexed_rowids: 0,
+            live_assets: 0,
+            orphan_count: 0,
+            unindexed_count: 0,
+            soft_deleted_indexed: 0,
+            orphan_samples: Vec::new(),
+            unindexed_samples: Vec::new(),
+            repaired: false,
+        })
     }
 }

@@ -8,7 +8,8 @@ use uuid::Uuid;
 
 use crate::error::{ApiError, Result};
 use crate::models::{
-    AddTagRequest, Asset, AuthContext, CreateAssetRequest, Tag, UpdateAssetRequest,
+    AddTagRequest, Asset, AuthContext, CreateAssetRequest, SearchIndexDrift, Tag,
+    UpdateAssetRequest,
 };
 use crate::repository::traits::AssetRepository;
 
@@ -19,6 +20,13 @@ pub struct SqliteAssetRepository {
 impl SqliteAssetRepository {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    /// Read-only handle to the backing pool — the reconcile tests simulate
+    /// trigger-bypassing drift (the exact class the reconcile contract
+    /// catches), which needs direct SQL alongside the repository calls.
+    pub fn pool_handle(&self) -> &SqlitePool {
+        &self.pool
     }
 
     /// Hydrate an Asset from the base row + tags + metadata.
@@ -975,6 +983,108 @@ impl AssetRepository for SqliteAssetRepository {
         tx.commit().await?;
 
         self.get_by_id(id).await
+    }
+
+    async fn reconcile_search_index(
+        &self,
+        repair: bool,
+        sample_limit: u32,
+    ) -> Result<SearchIndexDrift> {
+        // The refresh contract (the list-shows/GET-404 family: e410455a,
+        // 92b7a94e, 49fe8037): the FTS index is DERIVED data keyed by
+        // assets.rowid; the assets table is the truth. Repair = the full
+        // rebuild command — the same boot-time contract (main.rs) — which
+        // re-derives the index from the live rows: orphans drop out,
+        // unindexed rows enter. No asset row is touched.
+        if repair {
+            sqlx::raw_sql("INSERT INTO assets_fts(assets_fts) VALUES('rebuild');")
+                .execute(&self.pool)
+                .await
+                .map_err(|e| ApiError::GenericDatabase(e.to_string()))?;
+        }
+
+        // ORPHANS: indexed rowids with NO assets row at all (hard-removed
+        // outside the trigger contract). Soft-deleted rows still live in
+        // `assets` (deleted_at set) — they are NOT orphans.
+        //
+        // ENUMERATION SURFACE: the `assets_fts_docsize` shadow table — one
+        // row per indexed document, keyed by rowid. A bare scan of the
+        // FTS table itself reads THROUGH to the content table (verified
+        // empirically: it returns every assets rowid, indexed or not) and
+        // cannot enumerate the index.
+        let orphan_ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT d.id FROM assets_fts_docsize d \
+             WHERE NOT EXISTS (SELECT 1 FROM assets a WHERE a.rowid = d.id) \
+             ORDER BY d.id LIMIT ?",
+        )
+        .bind(sample_limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ApiError::GenericDatabase(e.to_string()))?;
+
+        let orphan_total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM assets_fts_docsize d \
+             WHERE NOT EXISTS (SELECT 1 FROM assets a WHERE a.rowid = d.id)",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| ApiError::GenericDatabase(e.to_string()))?;
+
+        // UNINDEXED: live rows the index does not know — text search can
+        // never surface them.
+        let unindexed_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT a.id FROM assets a \
+             WHERE a.deleted_at IS NULL \
+             AND NOT EXISTS (SELECT 1 FROM assets_fts_docsize d WHERE d.id = a.rowid) \
+             ORDER BY a.rowid LIMIT ?",
+        )
+        .bind(sample_limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ApiError::GenericDatabase(e.to_string()))?;
+
+        let unindexed_total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM assets a \
+             WHERE a.deleted_at IS NULL \
+             AND NOT EXISTS (SELECT 1 FROM assets_fts_docsize d WHERE d.id = a.rowid)",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| ApiError::GenericDatabase(e.to_string()))?;
+
+        let indexed_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM assets_fts_docsize")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| ApiError::GenericDatabase(e.to_string()))?;
+
+        let live_total: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM assets WHERE deleted_at IS NULL")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| ApiError::GenericDatabase(e.to_string()))?;
+
+        // Informational: soft-deleted rows still indexed — expected state
+        // (the read path filters deleted_at IS NULL; the index entry is
+        // harmless). Reported so an operator never mistakes it for drift.
+        let soft_deleted_indexed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM assets a \
+             WHERE a.deleted_at IS NOT NULL \
+             AND EXISTS (SELECT 1 FROM assets_fts_docsize d WHERE d.id = a.rowid)",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| ApiError::GenericDatabase(e.to_string()))?;
+
+        Ok(SearchIndexDrift {
+            indexed_rowids: indexed_total.max(0) as u64,
+            live_assets: live_total.max(0) as u64,
+            orphan_count: orphan_total.max(0) as u64,
+            unindexed_count: unindexed_total.max(0) as u64,
+            soft_deleted_indexed: soft_deleted_indexed.max(0) as u64,
+            orphan_samples: orphan_ids.iter().map(|r| r.to_string()).collect(),
+            unindexed_samples: unindexed_ids,
+            repaired: repair,
+        })
     }
 }
 

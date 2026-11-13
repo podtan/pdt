@@ -120,6 +120,40 @@ pub struct UpdateAuthContextRequest {
     pub cascade: bool,
 }
 
+/// Search-index reconcile report — drift between the FTS index and the
+/// live asset rows (the list-shows/GET-404 family: issues e410455a,
+/// 92b7a94e, 49fe8037). The FTS index is DERIVED data keyed by
+/// `assets.rowid`; the assets table is the truth. Drift classes:
+/// - `orphan` — an indexed rowid with NO assets row at all (the asset was
+///   hard-removed outside the trigger contract; a query matching it serves
+///   nothing while the index still advertises it).
+/// - `unindexed` — a live (non-deleted) assets row the FTS index does not
+///   know: text search can never surface it.
+/// `soft_deleted_indexed` is EXPECTED state (soft-delete keeps the index
+/// entry; the read path filters `deleted_at IS NULL`) — informational, not
+/// drift.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SearchIndexDrift {
+    /// Rowids the FTS index knows (external-content index scan).
+    pub indexed_rowids: u64,
+    /// Live (non-deleted) asset rows — the truth the index must mirror.
+    pub live_assets: u64,
+    /// Indexed rowids with no assets row (drift).
+    pub orphan_count: u64,
+    /// Live assets missing from the index (drift).
+    pub unindexed_count: u64,
+    /// Soft-deleted rows still indexed — expected, informational.
+    pub soft_deleted_indexed: u64,
+    /// Bounded specimen of orphan ROWIDS (the asset ids are gone with the
+    /// rows — rowids are the only handle that survives).
+    pub orphan_samples: Vec<String>,
+    /// Bounded specimen of unindexed ASSET ids.
+    pub unindexed_samples: Vec<String>,
+    /// true = the repair ran (full FTS rebuild) and these numbers are the
+    /// POST-repair state (both drift classes must be 0).
+    pub repaired: bool,
+}
+
 /// Compact search result — returned by /api/search by default
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SearchResult {

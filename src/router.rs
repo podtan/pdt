@@ -182,6 +182,12 @@ pub fn build_router(
             "/api/maintenance/audit-prune",
             post(handlers::maintenance::audit_prune),
         )
+        // Search-index reconcile — the refresh contract for the derived FTS
+        // index (the list-shows/GET-404 family: e410455a, 92b7a94e, 49fe8037)
+        .route(
+            "/api/maintenance/reconcile",
+            post(handlers::maintenance::reconcile),
+        )
         // Audit routes
         .route("/api/audit", get(handlers::audit::list_audit_entries))
         .route(

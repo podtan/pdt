@@ -1,7 +1,7 @@
 //! Search service
 
 use crate::error::Result;
-use crate::models::Asset;
+use crate::models::{Asset, SearchIndexDrift};
 use crate::service::Services;
 use std::collections::HashMap;
 
@@ -57,5 +57,21 @@ impl SearchService {
         tag_filters: &[(String, String)],
     ) -> Result<u64> {
         services.assets().count_search(query, tag_filters).await
+    }
+
+    /// Search-index reconcile — the refresh contract for the derived FTS
+    /// index (the list-shows/GET-404 family: e410455a, 92b7a94e,
+    /// 49fe8037). Dry-run reports the drift; repair=true rebuilds the
+    /// index from the assets table (the truth) and returns the
+    /// post-repair state.
+    pub async fn reconcile(
+        services: &Services,
+        repair: bool,
+        sample_limit: u32,
+    ) -> Result<SearchIndexDrift> {
+        services
+            .assets()
+            .reconcile_search_index(repair, sample_limit)
+            .await
     }
 }

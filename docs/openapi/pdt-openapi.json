@@ -418,6 +418,51 @@
         }
       }
     },
+    "/api/assets/{id}/metadata": {
+      "patch": {
+        "tags": [
+          "assets"
+        ],
+        "summary": "Merge metadata keys into an asset — the delta-write surface (issue\na5daf31d). UPSERT per key, never a full-map replace: the keys the caller\ndoes not send are untouched, so a concurrent writer's keys survive. The\nruntime state report (observed_state + last_synced_at) is the first\nconsumer — its heartbeat must never clobber a concurrent profile edit.",
+        "operationId": "merge_asset_metadata",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Asset ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeMetadataRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Metadata keys merged successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Asset"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Asset not found"
+          }
+        }
+      }
+    },
     "/api/assets/{id}/relations": {
       "get": {
         "tags": [
@@ -1400,6 +1445,33 @@
         }
       }
     },
+    "/api/maintenance/audit-prune": {
+      "post": {
+        "tags": [
+          "maintenance"
+        ],
+        "summary": "Audit-entries retention prune — ARCHIVE-THEN-DELETE (issue 2c71e4e6).\nThe audit_entries table is the record of record: rows older than the\nwindow are exported to a dated JSONL archive with row-count verify\nFIRST, then deleted — no silent deletes. Same fail-closed gates as the\nasset prune.",
+        "operationId": "audit_prune",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuditPruneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Audit-prune report (dry-run numbers or archive-then-delete summary)"
+          },
+          "403": {
+            "description": "Requires role=admin (token claim or registry global_role); execution refused when PDT_PRUNE_ENABLED unset, or the audit-entries class is not policy-cleared (absent policy, absent section, disposition not archive_then_delete, or window below policy)"
+          }
+        }
+      }
+    },
     "/api/maintenance/backfill": {
       "post": {
         "tags": [
@@ -1440,6 +1512,34 @@
           },
           "403": {
             "description": "Requires role=admin (token claim or registry global_role); execution refused when PDT_PRUNE_ENABLED unset, or the class is not policy-cleared (archive-only class, window below policy, or class absent from PDT_PRUNE_POLICY_PATH)"
+          }
+        }
+      }
+    },
+    "/api/maintenance/reconcile": {
+      "post": {
+        "tags": [
+          "maintenance"
+        ],
+        "summary": "Search-index reconcile — drift report (dry-run) or repair (execute).",
+        "description": "The FTS index is DERIVED data keyed by assets.rowid; the assets table\nis the truth. This operation reports where the two disagree (orphaned\nindex rowids / unindexed live rows) and repairs by the full rebuild —\nthe same command the boot path runs. Admin-gated like every\nmaintenance route; the rebuild is safe (derived data only) but heavy,\nso dry_run defaults the caller to read-only.",
+        "operationId": "reconcile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReconcileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Drift report (dry-run) or post-repair report (execute)"
+          },
+          "403": {
+            "description": "Requires role=admin (token claim or registry global_role)"
           }
         }
       }
@@ -1898,6 +1998,26 @@
           }
         }
       },
+      "AuditPruneRequest": {
+        "type": "object",
+        "description": "Audit-entries retention prune request (issue 2c71e4e6) — the policy\nlives in DATA (the audit_entries section of PDT_PRUNE_POLICY_PATH); the\nendpoint encodes only the mechanics.",
+        "required": [
+          "older_than_days",
+          "dry_run"
+        ],
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "true = report the numbers only (zero writes). false = execute the\narchive-then-delete prune — REFUSED unless PDT_PRUNE_ENABLED is set\nAND the audit-entries class is policy-cleared (section present,\ndisposition archive_then_delete, window at/above the policy window)."
+          },
+          "older_than_days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Age window in days — audit entries older than this are candidates.",
+            "minimum": 0
+          }
+        }
+      },
       "AuthContext": {
         "type": "object",
         "description": "Authorization context embedded on an asset.\n\nThree fields that don't exist anywhere in Asset or Tags.\nThis struct is 1:1 with the Asset document (MongoDB-idiomatic).",
@@ -2326,6 +2446,22 @@
           }
         }
       },
+      "MergeMetadataRequest": {
+        "type": "object",
+        "description": "Request to MERGE metadata keys into an asset (issue a5daf31d) — upsert\nper key, never a full-map replace. The delta-write surface for writers\nthat own a few keys (the runtime state report owns observed_state +\nlast_synced_at); keys not in the request are untouched.",
+        "required": [
+          "metadata"
+        ],
+        "properties": {
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "PaginatedResponse_Asset": {
         "type": "object",
         "description": "Paginated response wrapper",
@@ -2609,6 +2745,19 @@
           "tag_value": {
             "type": "string",
             "description": "Tag VALUE to match (e.g. \"report\")."
+          }
+        }
+      },
+      "ReconcileRequest": {
+        "type": "object",
+        "description": "Search-index reconcile request — the refresh contract for the derived\nFTS index (the list-shows/GET-404 family: e410455a, 92b7a94e,\n49fe8037).",
+        "required": [
+          "dry_run"
+        ],
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "true = report the drift only (zero writes). false = execute the\nfull FTS rebuild — derived data re-derived from the assets table\n(the truth); NO asset row is touched — then the post-repair state\nis reported (both drift classes must read 0)."
           }
         }
       },

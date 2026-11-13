@@ -63,6 +63,7 @@ use crate::service::prune_policy::{Disposition, PrunePolicy, PruneVerdict};
 use crate::service::roles_service::RolesService;
 use crate::service::AssetService;
 use crate::service::AuditService;
+use crate::service::SearchService;
 use crate::tenant::TenantPoolManager;
 
 /// Extract role strings from the caller's claims — Kanidm returns `role` as
@@ -399,6 +400,89 @@ pub async fn audit_prune(
         // its labeled fallback).
         insert_policy_window_fields(&mut body, &policy);
     }
+    Ok(Json(serde_json::Value::Object(body)))
+}
+
+/// Search-index reconcile request — the refresh contract for the derived
+/// FTS index (the list-shows/GET-404 family: e410455a, 92b7a94e,
+/// 49fe8037).
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ReconcileRequest {
+    /// true = report the drift only (zero writes). false = execute the
+    /// full FTS rebuild — derived data re-derived from the assets table
+    /// (the truth); NO asset row is touched — then the post-repair state
+    /// is reported (both drift classes must read 0).
+    pub dry_run: bool,
+}
+
+/// Search-index reconcile — drift report (dry-run) or repair (execute).
+///
+/// The FTS index is DERIVED data keyed by assets.rowid; the assets table
+/// is the truth. This operation reports where the two disagree (orphaned
+/// index rowids / unindexed live rows) and repairs by the full rebuild —
+/// the same command the boot path runs. Admin-gated like every
+/// maintenance route; the rebuild is safe (derived data only) but heavy,
+/// so dry_run defaults the caller to read-only.
+#[utoipa::path(
+    post,
+    path = "/api/maintenance/reconcile",
+    request_body = ReconcileRequest,
+    responses(
+        (status = 200, description = "Drift report (dry-run) or post-repair report (execute)"),
+        (status = 403, description = "Requires role=admin (token claim or registry global_role)"),
+    ),
+    tag = "maintenance"
+)]
+pub async fn reconcile(
+    tx: TenantState,
+    user: AuthenticatedUser,
+    Json(req): Json<ReconcileRequest>,
+) -> Result<Json<serde_json::Value>> {
+    // Admin gate — fail-closed, with the registry fallback for claim-less
+    // exchanged tokens (CPO precondition 1). Same gate as backfill/prune.
+    admin_gate(&tx, &user).await?;
+
+    let drift = SearchService::reconcile(tx.services(), !req.dry_run, 50).await?;
+
+    // Explicit Map construction — the json! macro with non-literal values
+    // trips the never-type-fallback future-compat error on this toolchain.
+    let mut body = serde_json::Map::new();
+    body.insert(
+        "indexed_rowids".to_string(),
+        serde_json::Value::from(drift.indexed_rowids),
+    );
+    body.insert(
+        "live_assets".to_string(),
+        serde_json::Value::from(drift.live_assets),
+    );
+    body.insert(
+        "orphan_count".to_string(),
+        serde_json::Value::from(drift.orphan_count),
+    );
+    body.insert(
+        "unindexed_count".to_string(),
+        serde_json::Value::from(drift.unindexed_count),
+    );
+    body.insert(
+        "soft_deleted_indexed".to_string(),
+        serde_json::Value::from(drift.soft_deleted_indexed),
+    );
+    body.insert(
+        "orphan_samples".to_string(),
+        serde_json::Value::from(drift.orphan_samples),
+    );
+    body.insert(
+        "unindexed_samples".to_string(),
+        serde_json::Value::from(drift.unindexed_samples),
+    );
+    body.insert(
+        "repaired".to_string(),
+        serde_json::Value::Bool(drift.repaired),
+    );
+    body.insert(
+        "drift_free".to_string(),
+        serde_json::Value::Bool(drift.orphan_count == 0 && drift.unindexed_count == 0),
+    );
     Ok(Json(serde_json::Value::Object(body)))
 }
 

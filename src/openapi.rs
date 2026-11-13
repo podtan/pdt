@@ -55,6 +55,7 @@ use utoipa::OpenApi;
         crate::handlers::maintenance::backfill,
         crate::handlers::maintenance::prune,
         crate::handlers::maintenance::audit_prune,
+        crate::handlers::maintenance::reconcile,
         // Audit routes
         crate::handlers::audit::list_audit_entries,
         crate::handlers::audit::get_asset_history,
@@ -98,6 +99,7 @@ use utoipa::OpenApi;
         crate::models::AuditEntry,
         crate::models::AuditAction,
         crate::handlers::maintenance::AuditPruneRequest,
+        crate::handlers::maintenance::ReconcileRequest,
         crate::service::relation_service::GraphNode,
         crate::handlers::cedar::CedarPolicyResponse,
         crate::models::roles::RoleAnswer,

@@ -6,7 +6,7 @@
 use crate::error::Result;
 use crate::models::{
     AddTagRequest, Asset, AuditAction, AuditEntry, AuthContext, Collection, CreateAssetRequest,
-    CreateCollectionRequest, CreateRelationRequest, Relation, UpdateAssetRequest,
+    CreateCollectionRequest, CreateRelationRequest, Relation, SearchIndexDrift, UpdateAssetRequest,
     UpdateCollectionRequest,
 };
 use async_trait::async_trait;
@@ -144,6 +144,25 @@ pub trait AssetRepository: Send + Sync {
         user_id: &str,
         provenance: &str,
     ) -> Result<Asset>;
+
+    /// Search-index reconcile — the refresh contract for the derived FTS
+    /// index (the list-shows/GET-404 family: e410455a stale rows,
+    /// 92b7a94e dangling entry, 49fe8037 transient GET-404).
+    ///
+    /// Reports drift between the index and the live asset rows
+    /// (orphaned index rowids / unindexed live rows). With `repair=true`
+    /// the index is rebuilt from the assets table (the truth) and the
+    /// returned numbers are the POST-repair state — the contract: the
+    /// index must not serve rows the asset store cannot resolve, and must
+    /// know every live row.
+    ///
+    /// Backends without a derived text index (mongo) return a zeroed
+    /// report — the contract holds by construction there.
+    async fn reconcile_search_index(
+        &self,
+        repair: bool,
+        sample_limit: u32,
+    ) -> Result<SearchIndexDrift>;
 }
 
 /// Repository for relation operations.

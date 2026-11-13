@@ -1416,3 +1416,167 @@ async fn sqlite_resolve_prefix_is_tenancy_scoped_cross_band_404() {
         "a cross-band prefix is absent in store B — 404, never a bypass"
     );
 }
+
+// ============================================================================
+// SEARCH-INDEX RECONCILE (the refresh contract — issues e410455a, 92b7a94e,
+// 49fe8037: the list-shows/GET-404 family)
+// ============================================================================
+
+#[tokio::test]
+async fn sqlite_reconcile_healthy_store_is_drift_free() {
+    // The contract on a healthy store: every live row indexed, zero
+    // orphans. Soft-deleted rows stay indexed BY DESIGN (informational,
+    // never drift).
+    let (assets, _, _, _, _) = setup_repos().await;
+    let a = assets
+        .create(
+            common::make_asset_request("alpha doc", "alpha content"),
+            "u1",
+        )
+        .await
+        .unwrap();
+    let b = assets
+        .create(common::make_asset_request("beta doc", "beta content"), "u1")
+        .await
+        .unwrap();
+    assets.soft_delete(&b.id).await.unwrap();
+
+    let drift = assets.reconcile_search_index(false, 50).await.unwrap();
+    assert_eq!(drift.live_assets, 1, "one live row (b is soft-deleted)");
+    assert_eq!(drift.orphan_count, 0, "no orphans on a healthy store");
+    assert_eq!(drift.unindexed_count, 0, "every live row indexed");
+    assert_eq!(
+        drift.soft_deleted_indexed, 1,
+        "soft-deleted rows stay indexed — expected, informational"
+    );
+    assert!(!drift.repaired, "dry-run repairs nothing");
+    assert!(a.id.len() == 36, "sanity: uuid shape");
+}
+
+#[tokio::test]
+async fn sqlite_reconcile_detects_and_repairs_unindexed_live_row() {
+    // Simulated drift: a live assets row the index does not know (an
+    // insert that bypassed the sync trigger — the drift class the
+    // reconcile contract exists to catch). Dry-run reports it; repair
+    // re-derives the index and the post-repair state is drift-free.
+    let (assets, _, _, _, _) = setup_repos().await;
+    let pool = assets.pool_handle();
+
+    // Drop the insert trigger, insert OUTSIDE the contract, restore.
+    sqlx::raw_sql("DROP TRIGGER assets_ai;")
+        .execute(pool)
+        .await
+        .unwrap();
+    let created = assets
+        .create(
+            common::make_asset_request("ghost row", "never indexed"),
+            "u1",
+        )
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "CREATE TRIGGER assets_ai AFTER INSERT ON assets BEGIN \
+         INSERT INTO assets_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content); \
+         END;",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let drift = assets.reconcile_search_index(false, 50).await.unwrap();
+    assert_eq!(drift.unindexed_count, 1, "the ghost row is unindexed");
+    let ghost_id = created.id.clone();
+    assert_eq!(
+        drift.unindexed_samples,
+        vec![created.id],
+        "the sample carries the ASSET id"
+    );
+    assert_eq!(drift.orphan_count, 0);
+
+    // Repair: full rebuild re-derives the index from the truth.
+    let repaired = assets.reconcile_search_index(true, 50).await.unwrap();
+    assert!(repaired.repaired);
+    assert_eq!(
+        repaired.unindexed_count, 0,
+        "post-repair: the ghost row is indexed"
+    );
+    assert_eq!(repaired.orphan_count, 0);
+
+    // The repaired index actually SERVES the row (text search finds it).
+    let hits = assets
+        .search(Some("never indexed"), vec![], 10, None)
+        .await
+        .unwrap();
+    assert_eq!(hits.0.len(), 1, "the repaired index serves the ghost row");
+    assert_eq!(hits.0[0].id, ghost_id);
+}
+
+#[tokio::test]
+async fn sqlite_reconcile_detects_and_repairs_orphaned_index_rowid() {
+    // Simulated drift: an index entry whose assets row is GONE (hard
+    // removal outside the trigger contract). The asset is created
+    // NORMALLY (indexed via the insert trigger), then the DELETE trigger
+    // is dropped and the row hard-removed — the index entry survives the
+    // row. The orphan rowid is reported (the asset id is gone with the
+    // row); repair drops it.
+    let (assets, _, _, _, _) = setup_repos().await;
+    let pool = assets.pool_handle();
+
+    let created = assets
+        .create(
+            common::make_asset_request("doomed row", "orphan source"),
+            "u1",
+        )
+        .await
+        .unwrap();
+    let rowid: i64 = sqlx::query_scalar("SELECT rowid FROM assets WHERE id = ?")
+        .bind(&created.id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql("DROP TRIGGER assets_ad;")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM assets WHERE id = ?")
+        .bind(&created.id)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "CREATE TRIGGER assets_ad AFTER DELETE ON assets BEGIN \
+         INSERT INTO assets_fts(assets_fts, rowid, title, content) VALUES ('delete', old.rowid, old.title, old.content); \
+         END;",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let drift = assets.reconcile_search_index(false, 50).await.unwrap();
+    assert_eq!(
+        drift.orphan_count, 1,
+        "the doomed row's index entry is orphaned"
+    );
+    assert_eq!(
+        drift.orphan_samples,
+        vec![rowid.to_string()],
+        "orphans report the ROWID — the asset id is gone with the row"
+    );
+    assert_eq!(drift.unindexed_count, 0);
+
+    // Repair: the rebuild re-derives from the truth — the orphan drops.
+    let repaired = assets.reconcile_search_index(true, 50).await.unwrap();
+    assert!(repaired.repaired);
+    assert_eq!(repaired.orphan_count, 0, "post-repair: no orphans");
+    assert_eq!(repaired.unindexed_count, 0);
+
+    // The orphaned entry no longer matches text search.
+    let hits = assets
+        .search(Some("orphan source"), vec![], 10, None)
+        .await
+        .unwrap();
+    assert!(
+        hits.0.is_empty(),
+        "the repaired index no longer advertises the orphaned rowid"
+    );
+}

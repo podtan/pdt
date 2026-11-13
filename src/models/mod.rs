@@ -12,7 +12,7 @@ mod tag;
 
 pub use asset::{
     generate_snippet, AdoptAssetRequest, Asset, CreateAssetRequest, MergeMetadataRequest,
-    SearchResult, TagSummary, UpdateAssetRequest, UpdateAuthContextRequest,
+    SearchIndexDrift, SearchResult, TagSummary, UpdateAssetRequest, UpdateAuthContextRequest,
 };
 pub use audit::{AuditAction, AuditEntry};
 pub use auth_context::AuthContext;
