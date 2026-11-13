@@ -208,6 +208,12 @@ pub fn build_router(
             "/api/instances/tree",
             get(handlers::instances::list_instance_tree),
         )
+        // Store sizes — the filesystem inventory (read-only stat walk; the
+        // inventory-guard's growth watch, paydar's dc33b060 ask)
+        .route(
+            "/api/instances/sizes",
+            get(handlers::instances::list_instance_sizes),
+        )
         // Middleware (auth + tracing + CORS)
         .layer(TraceLayer::new_for_http())
         .layer(auth_layer.clone())

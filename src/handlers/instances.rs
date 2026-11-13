@@ -156,6 +156,19 @@ pub struct InstanceTreeNode {
     pub children: Vec<String>,
 }
 
+/// A per-instance store-size row (the inventory-guard's growth watch —
+/// the store owner reports its own sizes; paydar's dc33b060 ask).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InstanceStoreSize {
+    pub instance_id: String,
+    /// Parent workspace id when the instance is nested (companies, agents).
+    pub parent_id: Option<String>,
+    /// The pdt.db file size in bytes.
+    pub store_bytes: u64,
+    /// The SQLite write-ahead log (pdt.db-wal) size in bytes.
+    pub wal_bytes: u64,
+}
+
 /// List all provisioned instances as a workspace tree.
 #[utoipa::path(
     get,
@@ -190,6 +203,36 @@ pub async fn list_instance_tree(
             })
             .collect::<Vec<_>>()
             .into_iter()
+            .collect(),
+    )
+}
+
+/// Per-instance store sizes — the FILESYSTEM inventory (read-only stat
+/// walk), not the lazy pool state: idle nested leaves are invisible to
+/// /api/instances (d2a4e0ca) but their bands still hold data the
+/// inventory-guard must watch (the b19929a4 hot-store class). Read-only
+/// by construction — performs zero writes, opens zero pools.
+#[utoipa::path(
+    get,
+    path = "/api/instances/sizes",
+    responses(
+        (status = 200, description = "Per-instance store sizes, sorted by total bytes descending", body = [InstanceStoreSize]),
+    ),
+    tag = "instances",
+)]
+pub async fn list_instance_sizes(
+    State(manager): State<TenantPoolManager>,
+) -> Json<Vec<InstanceStoreSize>> {
+    Json(
+        manager
+            .store_sizes()
+            .into_iter()
+            .map(|r| InstanceStoreSize {
+                instance_id: r.instance_id,
+                parent_id: r.parent_id,
+                store_bytes: r.store_bytes,
+                wal_bytes: r.wal_bytes,
+            })
             .collect(),
     )
 }

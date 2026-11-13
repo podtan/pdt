@@ -579,10 +579,86 @@ impl TenantPoolManager {
         out
     }
 
+    /// Per-instance store sizes — the FILESYSTEM inventory (read-only stat
+    /// walk), not the lazy pool state: idle nested leaves are invisible to
+    /// list_instances (d2a4e0ca) but their bands still hold data the
+    /// inventory-guard must watch (the b19929a4 hot-store class). Two
+    /// levels deep, matching the tenancy structure (workspace/child). A
+    /// band missing its pdt.db is skipped (fail-soft per band — an
+    /// observation never crashes the surface). Sorted by total bytes
+    /// descending — the guard watches the biggest first.
+    pub fn store_sizes(&self) -> Vec<StoreSizeRow> {
+        let mut rows: Vec<StoreSizeRow> = Vec::new();
+        let Ok(top) = std::fs::read_dir(&self.instances_dir) else {
+            return rows;
+        };
+        for entry in top.flatten() {
+            let ws_path = entry.path();
+            if !ws_path.is_dir() {
+                continue;
+            }
+            let ws_name = entry.file_name().to_string_lossy().to_string();
+            if let Some(row) = Self::stat_band(&ws_path, &ws_name, None) {
+                rows.push(row);
+            }
+            // Nested children (one level — the tenancy tree's depth).
+            if let Ok(children) = std::fs::read_dir(&ws_path) {
+                for child in children.flatten() {
+                    let child_path = child.path();
+                    if !child_path.is_dir() {
+                        continue;
+                    }
+                    let child_name = child.file_name().to_string_lossy().to_string();
+                    if let Some(row) =
+                        Self::stat_band(&child_path, &child_name, Some(ws_name.clone()))
+                    {
+                        rows.push(row);
+                    }
+                }
+            }
+        }
+        rows.sort_by(|a, b| (b.store_bytes + b.wal_bytes).cmp(&(a.store_bytes + a.wal_bytes)));
+        rows
+    }
+
+    /// Stat one band's store files. A missing pdt.db yields None (the band
+    /// is skipped — fail-soft); a missing -wal yields 0 (WAL is transient).
+    fn stat_band(
+        dir: &std::path::Path,
+        instance_id: &str,
+        parent_id: Option<String>,
+    ) -> Option<StoreSizeRow> {
+        let store_bytes = std::fs::metadata(dir.join("pdt.db")).ok()?.len();
+        let wal_bytes = std::fs::metadata(dir.join("pdt.db-wal"))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        Some(StoreSizeRow {
+            instance_id: instance_id.to_string(),
+            parent_id,
+            store_bytes,
+            wal_bytes,
+        })
+    }
+
     /// Get the global services reference.
     pub fn global(&self) -> &Services {
         &self.global_services
     }
+}
+
+/// One instance's store-file sizes (bytes on disk) — the store owner's own
+/// measurement. The inventory-guard watches growth like any other guard
+/// leg (paydar's dc33b060 ask); the facade surfaces read this over HTTP,
+/// never the filesystem (zero cross-service coupling).
+#[derive(Debug, Clone)]
+pub struct StoreSizeRow {
+    pub instance_id: String,
+    /// Parent workspace id when the instance is nested (companies, agents).
+    pub parent_id: Option<String>,
+    /// The pdt.db file size in bytes.
+    pub store_bytes: u64,
+    /// The SQLite write-ahead log (pdt.db-wal) size in bytes.
+    pub wal_bytes: u64,
 }
 
 #[cfg(test)]
