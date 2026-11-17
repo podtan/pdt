@@ -2492,3 +2492,145 @@ mod filter_logging_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod instance_type_create_tests {
+    //! Instance-type Create fail-open regression tests (kavosh #222, CPO
+    //! ruling ENFORCE, Rahnama patch-class acceptance): the create path was
+    //! the ONLY write handler without a Cedar consult — the instance-type
+    //! forbid (rbac.cedar) evaluates resource.asset_type, which only exists
+    //! on stored assets, so it dead-lettered on create and a non-admin could
+    //! POST an instance-type asset directly. The fix consults on a
+    //! REQUEST-DERIVED resource (asset_type from the payload tags) so the
+    //! forbid fires PRE-WRITE. Ordinary-asset Create stays any-authenticated
+    //! (the unconditional Create permit; ruling 9e32f9ba untouched).
+
+    use super::*;
+    use crate::models::{AddTagRequest, AuthContext};
+    use pep::cedar::CedarConfig;
+    use std::path::PathBuf;
+
+    fn test_authorizer() -> CedarAuthorizer {
+        let config = CedarConfig {
+            policy_path: PathBuf::from("/nonexistent/policies.cedar"),
+            schema_path: None,
+            entities_path: None,
+            default_decision: Default::default(),
+            validate_on_load: true,
+            policy_store_url: None,
+            policy_store_token: None,
+            embedded_policy: Some(include_str!("../../policies/rbac.cedar")),
+            embedded_schema: Some(include_str!("../../policies/schema.cedarschema")),
+        };
+        CedarAuthorizer::new(config).expect("embedded policy loads")
+    }
+
+    fn claims_for(sub: &str, role: &str) -> JwtClaims {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "role".to_string(),
+            serde_json::Value::String(role.to_string()),
+        );
+        extra.insert(
+            "groups".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String("plt-agents".to_string())]),
+        );
+        JwtClaims {
+            sub: sub.to_string(),
+            iss: "test-issuer".to_string(),
+            aud: None,
+            exp: 9999999999,
+            iat: None,
+            email: Some(format!("{}@example.com", sub)),
+            name: None,
+            preferred_username: None,
+            extra,
+        }
+    }
+
+    /// The REQUEST-DERIVED probe shape the create handler builds: asset_type
+    /// from the payload tags, the guarded birth auth_context the store will
+    /// persist (the guard always lands Some — the consult must fire on every
+    /// create, not only on explicit-auth_context payloads).
+    fn create_probe(asset_type: &str) -> Asset {
+        Asset {
+            id: "create-probe-1".to_string(),
+            title: "Probe".to_string(),
+            content: None,
+            tags: vec![crate::models::Tag {
+                id: "tag-1".to_string(),
+                category: "asset_type".to_string(),
+                value: asset_type.to_string(),
+                added_by: "probe".to_string(),
+                added_at: chrono::Utc::now(),
+            }],
+            metadata: std::collections::HashMap::new(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            created_by: "probe".to_string(),
+            updated_by: "probe".to_string(),
+            deleted_at: None,
+            auth_context: Some(AuthContext {
+                visibility: "team".to_string(),
+                owner_groups: vec!["plt-agents".to_string()],
+                confidentiality: String::new(),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn non_admin_instance_type_create_denied_pre_write() {
+        let authorizer = test_authorizer();
+        let probe = create_probe("instance-type");
+        let claims = claims_for("bob", "member");
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "Create", &probe)
+            .expect("evaluation succeeds");
+        assert!(
+            !allowed,
+            "non-admin instance-type Create must be DENIED pre-write (the forbid fires on the request-derived resource)"
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_asset_create_stays_any_authenticated() {
+        let authorizer = test_authorizer();
+        let probe = create_probe("document");
+        let claims = claims_for("bob", "member");
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "Create", &probe)
+            .expect("evaluation succeeds");
+        assert!(
+            allowed,
+            "ordinary-asset Create stays any-authenticated (ruling 9e32f9ba untouched)"
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_instance_type_create_allowed() {
+        let authorizer = test_authorizer();
+        let probe = create_probe("instance-type");
+        let claims = claims_for("super", "admin");
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "Create", &probe)
+            .expect("evaluation succeeds");
+        assert!(
+            allowed,
+            "admin instance-type Create must keep working (the admin permit)"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_admin_instance_type_edit_denied_control() {
+        // Control: the forbid was already live on Edit (stored assets carry
+        // asset_type) — the create fix must not disturb it.
+        let authorizer = test_authorizer();
+        let probe = create_probe("instance-type");
+        let claims = claims_for("bob", "member");
+        let allowed = evaluate_permission(&authorizer, &claims, &[], "Edit", &probe)
+            .expect("evaluation succeeds");
+        assert!(!allowed, "non-admin instance-type Edit stays denied");
+    }
+
+    // Silence the unused-import lint when AddTagRequest is not referenced
+    // directly (kept for parity with the IT-gate request shape).
+    #[allow(dead_code)]
+    fn _shape_parity(_r: AddTagRequest) {}
+}

@@ -13,6 +13,7 @@ pub mod relation_service;
 pub mod roles_service;
 mod search_service;
 
+pub use asset_service::guard_birth_auth_context;
 pub use asset_service::AssetService;
 pub use audit_service::AuditService;
 pub use collection_service::CollectionService;

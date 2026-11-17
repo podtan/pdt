@@ -71,6 +71,62 @@ pub async fn create_asset(
     let user_id = &user.user_id;
     let caller_groups = extract_caller_groups(&user);
 
+    // PRE-WRITE CEDAR CONSULT (instance-type Create fail-open fix — kavosh
+    // #222, CPO ruling ENFORCE, Rahnama patch-class acceptance): create was
+    // the ONLY write handler without a consult — the instance-type forbid
+    // (rbac.cedar) evaluates resource.asset_type, which only exists on
+    // stored assets, so it dead-lettered on create and a non-admin could
+    // POST an instance-type asset directly (wire proof: 200 created,
+    // rollback DELETE 403). The consult runs on a REQUEST-DERIVED resource
+    // (asset_type from the payload tags, the guarded birth auth_context the
+    // store will persist) so the forbid fires pre-write. Ordinary-asset
+    // Create stays any-authenticated (the unconditional Create permit;
+    // ruling 9e32f9ba untouched). The guard is idempotent on an
+    // already-guarded context, so the service's re-guard below is a no-op.
+    if let Some(authorizer) = tx.authorizer() {
+        let guarded_ctx = crate::service::guard_birth_auth_context(
+            request.auth_context.clone(),
+            &caller_groups,
+            user_id,
+        );
+        let probe = Asset {
+            id: uuid::Uuid::new_v4().to_string(),
+            title: request.title.clone(),
+            content: request.content.clone(),
+            tags: request
+                .tags
+                .iter()
+                .map(|t| Tag {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    category: t.category.clone(),
+                    value: t.value.clone(),
+                    added_by: user_id.clone(),
+                    added_at: chrono::Utc::now(),
+                })
+                .collect(),
+            metadata: request.metadata.clone(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            created_by: user_id.clone(),
+            updated_by: user_id.clone(),
+            deleted_at: None,
+            auth_context: Some(guarded_ctx),
+        };
+        let claims = extract_claims(&user);
+        let resolved =
+            crate::cedar::enforcement::resolve_instance_authz(tx.services(), &claims).await;
+        crate::cedar::enforcement::check_permission_resolved(
+            tx.services(),
+            authorizer,
+            &claims,
+            &resolved,
+            tx.instance_id(),
+            "Create",
+            &probe,
+        )
+        .await?;
+    }
+
     let asset = AssetService::create(tx.services(), request, user_id, &caller_groups).await?;
     Ok(Json(asset))
 }
