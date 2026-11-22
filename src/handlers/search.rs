@@ -198,60 +198,132 @@ pub async fn search(
         }
     }
 
+    // ── 00318672: FILTER-THEN-PAGE ──
+    // The page query used to run BEFORE the Cedar visibility filter (SQL
+    // window first, filter after), so a small limit could land entirely
+    // inside denied rows: an empty page-1 with a valid cursor and a
+    // PRE-FILTER total while visible matches existed further down — a
+    // lying absence indistinguishable from genuine no-data (paydar's
+    // limit=1 specimen + ×6 repros, 2026-11-22). Two changes:
+    //
+    // 1. TOTAL — post-filter. The full match set is fetched once (compact
+    //    projection, batched tags — search_authz_rows), batch-Cedar-
+    //    filtered (band-deduped: the eval count is bounded by distinct
+    //    bands, not rows), and the visible count is the total. A
+    //    pre-visibility total lies under any narrowed seat: it advertises
+    //    rows the caller cannot open. Known scaling edge: the pass is
+    //    O(matched) per search — at the current store size (~5k) that is
+    //    a handful of chunked queries; if the store grows an order of
+    //    magnitude, the next train moves a conservative band prefilter
+    //    into SQL. Correctness first.
+    //
+    // 2. PAGE — a bounded catch-up walk: fetch a SQL page, filter it,
+    //    accumulate, and keep walking until the caller's page is full or
+    //    the match set is exhausted. next_cursor is the LAST VISIBLE
+    //    row's keyset (or None at exhaustion) — never a row the caller
+    //    cannot see. The walk is capped at max(20×limit, 400) SQL rows
+    //    per request; at the cap the cursor is the walk's resumable
+    //    position (the SQL window end — following it continues the walk
+    //    without gaps or duplicates; a denied-row stretch longer than the
+    //    cap simply spans requests).
+    let all_matched =
+        SearchService::search_authz_rows(tx.services(), params.q.as_deref(), tag_filters.clone())
+            .await?;
+    let total = filter_visible(&tx, &claims, &resolved, all_matched)
+        .await?
+        .len() as u64;
+
+    let walk_cap = params.limit.saturating_mul(20).max(400);
+    let mut page_cursor = params.cursor.clone();
+    let mut visible: Vec<crate::models::Asset> = Vec::new();
+    let mut next_cursor: Option<String> = None;
+    let mut walked: i64 = 0;
+    loop {
+        let (assets, sql_next) = if params.full_content {
+            SearchService::search(
+                tx.services(),
+                params.q.as_deref(),
+                tag_filters.clone(),
+                params.limit,
+                page_cursor.as_deref(),
+            )
+            .await?
+        } else {
+            SearchService::search_compact(
+                tx.services(),
+                params.q.as_deref(),
+                tag_filters.clone(),
+                params.limit,
+                page_cursor.as_deref(),
+            )
+            .await?
+        };
+        walked += assets.len() as i64;
+        let vis = filter_visible(&tx, &claims, &resolved, assets).await?;
+        let need = (params.limit as usize).saturating_sub(visible.len());
+        let page_fills = vis.len() >= need;
+        let exact_fit_at_exhaustion = sql_next.is_none() && vis.len() == need;
+        if page_fills {
+            visible.extend(vis.into_iter().take(need));
+            // Page full: the cursor is the LAST VISIBLE row's keyset — a row
+            // the caller can actually see (the old code emitted the
+            // pre-filter window's end row, frequently invisible). Exception:
+            // the SQL set is exhausted AND this page exactly filled the
+            // caller's limit → nothing remains → None (no trailing empty
+            // page).
+            next_cursor = if exact_fit_at_exhaustion {
+                None
+            } else {
+                visible
+                    .last()
+                    .map(|a| format!("{}|{}", a.updated_at.to_rfc3339(), a.id))
+            };
+            break;
+        }
+        visible.extend(vis);
+        match sql_next {
+            None => {
+                // Match set exhausted — everything visible is in hand.
+                next_cursor = None;
+                break;
+            }
+            Some(nc) if walked < walk_cap => page_cursor = Some(nc),
+            Some(nc) => {
+                // Walk cap hit with the page still unfilled: resume from the
+                // SQL window end on the next request (may be a row the
+                // caller cannot see — it is a keyset position, not a row
+                // promise; the walk continues from there without gaps).
+                next_cursor = Some(nc);
+                break;
+            }
+        }
+    }
+
     if params.full_content {
         // Legacy behavior: full assets, content included in the page query.
-        // Count first (borrowed filters) — the true total is cursor-
-        // independent (issue b040d645 (b): PaginatedResponse.total existed
-        // but was never populated; boards rendered page-local counts).
-        let total = SearchService::count(tx.services(), params.q.as_deref(), &tag_filters).await?;
-        let (assets, next_cursor) = SearchService::search(
-            tx.services(),
-            params.q.as_deref(),
-            tag_filters,
-            params.limit,
-            params.cursor.as_deref(),
-        )
-        .await?;
-
-        let visible_assets = filter_visible(&tx, &claims, &resolved, assets).await?;
-
         Ok(Json(serde_json::to_value(PaginatedResponse {
-            data: visible_assets,
+            data: visible,
             next_cursor,
             total: Some(total),
         })?))
     } else {
-        // Compact path (default): the page query carries NO content blobs —
-        // the old SELECT read every matched body off disk per search and the
-        // response discarded it (eea5bcff). Two-phase: page without content
-        // → batch-Cedar filter → one content fetch for the visible page
-        // (≤limit rows) → snippets from those bodies.
-        // Count first (borrowed filters) — the true total is cursor-
-        // independent (issue b040d645 (b)).
-        let total = SearchService::count(tx.services(), params.q.as_deref(), &tag_filters).await?;
-        let (assets, next_cursor) = SearchService::search_compact(
-            tx.services(),
-            params.q.as_deref(),
-            tag_filters,
-            params.limit,
-            params.cursor.as_deref(),
-        )
-        .await?;
-
-        let visible_assets = filter_visible(&tx, &claims, &resolved, assets).await?;
-
+        // Compact path (default): the page rows carry NO content blobs —
+        // one content fetch for the visible page (≤limit rows) → snippets
+        // from those bodies (eea5bcff). The page itself came from the
+        // filter-then-page walk above.
+        //
         // 3fd2d848: snippet=false skips the content fetch entirely —
         // callers that never render snippets stop paying one blob read per
         // visible row. SearchResult.snippet is Option — None serializes as
         // an absent field.
         let contents = if params.snippet {
-            let ids: Vec<String> = visible_assets.iter().map(|a| a.id.clone()).collect();
+            let ids: Vec<String> = visible.iter().map(|a| a.id.clone()).collect();
             SearchService::get_contents(tx.services(), &ids).await?
         } else {
             std::collections::HashMap::new()
         };
 
-        let results: Vec<SearchResult> = visible_assets
+        let results: Vec<SearchResult> = visible
             .into_iter()
             .map(|a| {
                 let content = contents.get(&a.id).cloned().unwrap_or_default();

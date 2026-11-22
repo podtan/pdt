@@ -458,6 +458,73 @@ impl AssetRepository for MongoAssetRepository {
     /// Count assets matching the search filter — the true total for
     /// PaginatedResponse (issue b040d645). Same filter shape as `search`
     /// ($text + tag $elemMatch), cursor-independent.
+    /// Full match set for the search plane's POST-FILTER total (issue
+    /// 00318672) — mongo twin of the sqlite implementation. Same filter
+    /// shape as `search` ($text + tag $elemMatch), no cursor, no limit.
+    /// Mongo documents embed tags inline, so no second fetch is needed.
+    /// Sort mirrors `search` (textScore when a query is present, else
+    /// updated_at desc); ordering is irrelevant to the count contract but
+    /// keeps the method's "in search order" shape honest.
+    async fn search_authz_rows(
+        &self,
+        query: Option<&str>,
+        tag_filters: Vec<(String, String)>,
+    ) -> Result<Vec<Asset>> {
+        let mut filter = doc! { "deleted_at": { "$exists": false } };
+
+        if let Some(q) = query {
+            if !q.is_empty() {
+                let search_query = if q.contains(' ') && !q.starts_with('"') {
+                    q.split_whitespace()
+                        .map(|w| {
+                            if w.starts_with('+') || w.starts_with('-') {
+                                w.to_string()
+                            } else {
+                                format!("+{}", w)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    q.to_string()
+                };
+                filter.insert("$text", doc! { "$search": search_query });
+            }
+        }
+
+        if !tag_filters.is_empty() {
+            let mut tag_conditions = Vec::new();
+            for (category, value) in tag_filters {
+                tag_conditions.push(doc! {
+                    "tags": {
+                        "$elemMatch": {
+                            "category": category,
+                            "value": value
+                        }
+                    }
+                });
+            }
+            filter.insert("$and", tag_conditions);
+        }
+
+        let options = if query.is_some() {
+            mongodb::options::FindOptions::builder()
+                .sort(doc! { "score": { "$meta": "textScore" } })
+                .build()
+        } else {
+            mongodb::options::FindOptions::builder()
+                .sort(doc! { "updated_at": -1 })
+                .build()
+        };
+
+        let mut cursor = self.db.assets().find(filter).with_options(options).await?;
+        let mut assets = Vec::new();
+        while let Some(asset) = cursor.try_next().await? {
+            assets.push(asset);
+        }
+        Ok(assets)
+    }
+
     async fn count_search(
         &self,
         query: Option<&str>,

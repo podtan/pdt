@@ -84,14 +84,27 @@ pub trait AssetRepository: Send + Sync {
         self.search(query, tag_filters, limit, cursor).await
     }
 
+    /// Full match set for the search plane's POST-FILTER total (issue
+    /// 00318672): every live asset matching the text/tag filter, in search
+    /// order, NO limit, NO cursor, compact projection (no content — the
+    /// total pass never renders bodies), tags loaded batched where the
+    /// backend stores them out-of-line. The caller batch-Cedar-filters the
+    /// result; the visible count is the honest, caller-scoped total.
+    async fn search_authz_rows(
+        &self,
+        query: Option<&str>,
+        tag_filters: Vec<(String, String)>,
+    ) -> Result<Vec<Asset>>;
+
     /// Count assets matching the search filter (text query + tag filters) —
     /// the true total for PaginatedResponse (issue b040d645: the field
     /// existed but was never populated; boards rendered page-local counts
     /// as if they were the whole set). Cursor-independent: counts ALL
     /// matches in the store, not just this page. Pre-visibility: the count
-    /// reflects the filter, not the caller's Cedar view (documented in the
-    /// spec; the visibility guard protects content, and the pagination
-    /// envelope is already cursor-over-the-store).
+    /// reflects the filter, not the caller's Cedar view. SUPERSEDED as the
+    /// search response's total by `search_authz_rows` + post-filter eval
+    /// (00318672 — a pre-visibility total lies under any narrowed seat);
+    /// retained as a repository primitive (conformance-covered).
     async fn count_search(
         &self,
         query: Option<&str>,

@@ -1435,6 +1435,96 @@ pub async fn asset_count_search_matches_filter<A: AssetRepository>(assets: &A) {
     );
 }
 
+/// Drift guard for `search_authz_rows` (issue 00318672): the full-set pass
+/// must select EXACTLY the id-set an unlimited `search` selects — same WHERE
+/// shape (FTS + tag EXISTS), or the post-filter total silently counts a
+/// different population than the page walks.
+pub async fn search_authz_rows_matches_search_idset<A: AssetRepository>(assets: &A) {
+    for i in 0..3 {
+        assets
+            .create(
+                make_asset_request_with_tags(
+                    &format!("DriftGuard Doc {i}"),
+                    "driftguard body unique-token-qzx",
+                    vec![("type", "driftguard")],
+                ),
+                "user1",
+            )
+            .await
+            .unwrap();
+    }
+    assets
+        .create(
+            make_asset_request_with_tags("DriftGuard Other", "other body", vec![("type", "other")]),
+            "user1",
+        )
+        .await
+        .unwrap();
+
+    // Text query + tag filter, both shapes: id-sets must be equal.
+    let from_search = assets
+        .search(
+            Some("driftguard"),
+            vec![("type".to_string(), "driftguard".to_string())],
+            10_000,
+            None,
+        )
+        .await
+        .expect("search page")
+        .0;
+    let from_authz_rows = assets
+        .search_authz_rows(
+            Some("driftguard"),
+            vec![("type".to_string(), "driftguard".to_string())],
+        )
+        .await
+        .expect("authz rows");
+    let mut ids_search: Vec<&str> = from_search.iter().map(|a| a.id.as_str()).collect();
+    let mut ids_authz: Vec<&str> = from_authz_rows.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(
+        ids_search.len(),
+        3,
+        "search page (unlimited) must match the 3 driftguard assets"
+    );
+    ids_search.sort();
+    ids_authz.sort();
+    assert_eq!(
+        ids_search, ids_authz,
+        "search_authz_rows must select the SAME id-set as search — a divergent \
+         WHERE shape makes the post-filter total count a different population \
+         than the page walks (00318672 drift guard)"
+    );
+
+    // No-filter shape too (the q-less total pass walks the whole store).
+    let all_search = assets
+        .search(None, vec![], 10_000, None)
+        .await
+        .expect("all")
+        .0;
+    let all_authz = assets
+        .search_authz_rows(None, vec![])
+        .await
+        .expect("all rows");
+    assert_eq!(
+        all_search.len(),
+        all_authz.len(),
+        "q-less: search_authz_rows must match search's full live set"
+    );
+
+    // Ordering contract: search order (updated_at DESC, id DESC) — the total
+    // pass preserves it so callers may reuse the rows for page slicing.
+    let mut expected = all_authz.clone();
+    expected.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(b.id.cmp(&a.id)));
+    let sorted_ok = all_authz
+        .iter()
+        .zip(expected.iter())
+        .all(|(got, want)| got.id == want.id);
+    assert!(
+        sorted_ok,
+        "search_authz_rows must return rows in search order (updated_at DESC, id DESC)"
+    );
+}
+
 pub async fn asset_count_list_matches_filter<A: AssetRepository>(assets: &A) {
     assets
         .create(

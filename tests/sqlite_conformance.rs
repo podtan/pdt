@@ -926,6 +926,12 @@ async fn sqlite_asset_count_search_matches_filter() {
 }
 
 #[tokio::test]
+async fn sqlite_search_authz_rows_matches_search_idset() {
+    let (assets, _, _, _, _) = setup_repos().await;
+    common::search_authz_rows_matches_search_idset(&assets).await;
+}
+
+#[tokio::test]
 async fn sqlite_asset_count_list_matches_filter() {
     let (assets, _, _, _, _) = setup_repos().await;
     common::asset_count_list_matches_filter(&assets).await;

@@ -47,16 +47,21 @@ impl SearchService {
         services.assets().get_contents(ids).await
     }
 
-    /// Count assets matching the search filter — the true total for
-    /// PaginatedResponse (issue b040d645: the field existed but was never
-    /// populated; boards rendered page-local counts as if they were the
-    /// whole set). Cursor-independent, pre-visibility.
-    pub async fn count(
+    /// Full match set for the search plane's POST-FILTER total (issue
+    /// 00318672): every live asset matching the filter, compact projection,
+    /// batched tags. The handler batch-Cedar-filters the result — the
+    /// visible count is the honest, caller-scoped total (a pre-visibility
+    /// count lies under any narrowed seat: it advertises rows the caller
+    /// cannot open).
+    pub async fn search_authz_rows(
         services: &Services,
         query: Option<&str>,
-        tag_filters: &[(String, String)],
-    ) -> Result<u64> {
-        services.assets().count_search(query, tag_filters).await
+        tag_filters: Vec<(String, String)>,
+    ) -> Result<Vec<Asset>> {
+        services
+            .assets()
+            .search_authz_rows(query, tag_filters)
+            .await
     }
 
     /// Search-index reconcile — the refresh contract for the derived FTS

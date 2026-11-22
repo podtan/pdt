@@ -491,6 +491,99 @@ async fn degraded_enrichment_never_answers_200_empty_on_filtered_reads() {
     );
     eprintln!("OBSERVED phase-1 role-only search → 200 with the public canary visible");
 
+    // Control C (00318672, filter-then-page): a SECOND team-banded canary
+    // created NEWEST. A limit=1 page-1 used to land entirely inside that
+    // denied row: empty data + valid cursor + PRE-FILTER total while the
+    // public control sat visibly one row down — the lying-absence shape
+    // (paydar's limit=1 specimen, ×6 repros, 2026-11-22). The catch-up walk
+    // must surface the visible row, report the POST-FILTER total, and emit
+    // a cursor pointing at a row the caller can see.
+    let resp = client
+        .post(format!("{}/api/assets", pdt.base))
+        .header("Authorization", auth("agent-enriched"))
+        .json(&serde_json::json!({
+            "title": format!("denied-newest {canary_token}"),
+            "content": format!("denied-newest body {canary_token}"),
+            "auth_context": {
+                "visibility": "team",
+                "owner_groups": [GROUP],
+            },
+        }))
+        .send()
+        .await
+        .expect("create denied-newest canary");
+    assert!(
+        resp.status().is_success(),
+        "denied-newest canary create must succeed (got {})",
+        resp.status()
+    );
+    let denied_newest_id = resp.json::<serde_json::Value>().await.expect("create body")["_id"]
+        .as_str()
+        .expect("asset id (Asset serializes id as _id)")
+        .to_string();
+
+    let resp = client
+        .get(format!("{}/api/search", pdt.base))
+        .query(&[("q", canary_token), ("limit", "1")])
+        .header("Authorization", auth("agent-colleague"))
+        .send()
+        .await
+        .expect("colleague limit=1 search");
+    assert_eq!(resp.status(), 200, "limit=1 search must be 200");
+    let body: serde_json::Value = resp.json().await.expect("search body");
+    let rows = body["data"].as_array().expect("data array");
+    assert_eq!(
+        rows.len(),
+        1,
+        "filter-then-page: limit=1 must CATCH UP past the denied-newest row — \
+         page-1 empty while a visible match exists is the 00318672 lying absence"
+    );
+    assert!(
+        rows[0]["title"]
+            .as_str()
+            .map(|t| t.contains("public control"))
+            .unwrap_or(false),
+        "page-1's row must be the PUBLIC control (visible), never the denied canary"
+    );
+    assert_eq!(
+        body["total"].as_u64().expect("total field"),
+        1,
+        "total must be POST-FILTER (only the public control is visible to this \
+         principal) — the pre-filter total (3) lies about rows the caller cannot open"
+    );
+    let cursor = body["next_cursor"].as_str().expect("next_cursor field");
+    assert!(
+        !cursor.is_empty() && !cursor.contains(&denied_newest_id),
+        "next_cursor must be the LAST VISIBLE row's keyset — the old code emitted \
+         the pre-filter window's end row (here: the denied-newest canary), got {cursor}"
+    );
+    eprintln!(
+        "OBSERVED phase-1 filter-then-page: limit=1 → the public control on page-1, \
+         total=1 (post-filter), cursor on a visible row"
+    );
+
+    // Following the cursor: the walk resumes and exhausts honestly — no
+    // duplicates, no gaps, no dangling cursor.
+    let resp = client
+        .get(format!("{}/api/search", pdt.base))
+        .query(&[("q", canary_token), ("limit", "1"), ("cursor", cursor)])
+        .header("Authorization", auth("agent-colleague"))
+        .send()
+        .await
+        .expect("cursor-follow search");
+    assert_eq!(resp.status(), 200, "cursor-follow search must be 200");
+    let body: serde_json::Value = resp.json().await.expect("search body");
+    assert!(
+        body["data"].as_array().expect("data array").is_empty(),
+        "the match set is exhausted after the public control — the follow page must \
+         be honestly empty"
+    );
+    assert!(
+        body["next_cursor"].as_str().is_none(),
+        "an exhausted walk must answer next_cursor absent, not a dangling cursor"
+    );
+    eprintln!("OBSERVED phase-1 cursor-follow → honest exhaustion (no dangling cursor)");
+
     // ── phase 2a: DEAD-TOKEN flavor (userinfo 400 invalid_token) ──
     // Terminal for this token → honest 401-with-retry (b82a1925 contract).
     // A reactive refresh cures it — never a 200 of any kind.

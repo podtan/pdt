@@ -117,53 +117,100 @@ impl SqliteAssetRepository {
             .fetch_all(&self.pool)
             .await?;
 
-            let tags: Vec<Tag> = tag_rows
-                .into_iter()
-                .map(|t| Tag {
-                    id: t.id,
-                    category: t.category,
-                    value: t.value,
-                    added_by: t.added_by,
-                    added_at: parse_datetime(&t.added_at),
-                })
-                .collect();
-
-            // Compact path carries no metadata (the compact response shape
-            // has no metadata field).
-            let metadata: HashMap<String, serde_json::Value> = HashMap::new();
-
-            let auth_context = if row.visibility.is_some()
-                || row.confidentiality.is_some()
-                || row.owner_groups.is_some()
-            {
-                Some(AuthContext {
-                    visibility: row.visibility.clone().unwrap_or_default(),
-                    owner_groups: row
-                        .owner_groups
-                        .as_ref()
-                        .and_then(|g| serde_json::from_str(g).ok())
-                        .unwrap_or_default(),
-                    confidentiality: row.confidentiality.clone().unwrap_or_default(),
-                })
-            } else {
-                None
-            };
-
-            assets.push(Asset {
-                id: row.id.clone(),
-                title: row.title.clone(),
-                content: None,
-                tags,
-                metadata,
-                created_at: parse_datetime(&row.created_at),
-                updated_at: parse_datetime(&row.updated_at),
-                created_by: row.created_by.clone(),
-                updated_by: row.updated_by.clone(),
-                deleted_at: row.deleted_at.as_ref().map(|s| parse_datetime(s)),
-                auth_context,
-            });
+            let tags = tag_rows.into_iter().map(tag_row_to_tag).collect();
+            assets.push(compact_row_to_asset(row, tags));
         }
         Ok(assets)
+    }
+
+    /// Full-set hydration with BATCHED tag loading — the page hydration's
+    /// per-row tag SELECT is N+1, acceptable at ≤limit rows but not at
+    /// full-match-set size (the post-filter total pass runs it over every
+    /// match, store-sized for a q-less search — issue 00318672). One chunked
+    /// `IN` query per 500 assets keeps it O(store/500) round-trips.
+    async fn hydrate_compact_assets_batched(
+        &self,
+        rows: Vec<AssetCompactRow>,
+    ) -> Result<Vec<Asset>> {
+        const CHUNK: usize = 500;
+        let mut tags_by_asset: HashMap<String, Vec<Tag>> = HashMap::new();
+        for chunk in rows.chunks(CHUNK) {
+            let ids: Vec<&str> = chunk.iter().map(|r| r.id.as_str()).collect();
+            let placeholders = vec!["?"; ids.len()].join(",");
+            let tag_rows: Vec<(String, String, String, String, String, String)> =
+                sqlx::query_as(&format!(
+                    "SELECT asset_id, id, category, value, added_by, added_at \
+                     FROM tags WHERE asset_id IN ({placeholders})"
+                ))
+                .fetch_all(&self.pool)
+                .await?;
+            for tr in tag_rows {
+                tags_by_asset.entry(tr.0).or_default().push(Tag {
+                    id: tr.1,
+                    category: tr.2,
+                    value: tr.3,
+                    added_by: tr.4,
+                    added_at: parse_datetime(&tr.5),
+                });
+            }
+        }
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let tags = tags_by_asset.remove(&row.id).unwrap_or_default();
+                compact_row_to_asset(row, tags)
+            })
+            .collect())
+    }
+}
+
+/// Pure row→Asset construction shared by both compact hydrators (the per-row
+/// page hydrator and the batched full-set hydrator) — one place for the
+/// auth_context reconstruction so the two cannot drift.
+fn compact_row_to_asset(row: &AssetCompactRow, tags: Vec<Tag>) -> Asset {
+    // Compact path carries no metadata (the compact response shape
+    // has no metadata field).
+    let metadata: HashMap<String, serde_json::Value> = HashMap::new();
+
+    let auth_context = if row.visibility.is_some()
+        || row.confidentiality.is_some()
+        || row.owner_groups.is_some()
+    {
+        Some(AuthContext {
+            visibility: row.visibility.clone().unwrap_or_default(),
+            owner_groups: row
+                .owner_groups
+                .as_ref()
+                .and_then(|g| serde_json::from_str(g).ok())
+                .unwrap_or_default(),
+            confidentiality: row.confidentiality.clone().unwrap_or_default(),
+        })
+    } else {
+        None
+    };
+
+    Asset {
+        id: row.id.clone(),
+        title: row.title.clone(),
+        content: None,
+        tags,
+        metadata,
+        created_at: parse_datetime(&row.created_at),
+        updated_at: parse_datetime(&row.updated_at),
+        created_by: row.created_by.clone(),
+        updated_by: row.updated_by.clone(),
+        deleted_at: row.deleted_at.as_ref().map(|s| parse_datetime(s)),
+        auth_context,
+    }
+}
+
+fn tag_row_to_tag(t: TagRow) -> Tag {
+    Tag {
+        id: t.id,
+        category: t.category,
+        value: t.value,
+        added_by: t.added_by,
+        added_at: parse_datetime(&t.added_at),
     }
 }
 
@@ -697,6 +744,58 @@ impl AssetRepository for SqliteAssetRepository {
         };
 
         Ok((assets, next_cursor))
+    }
+
+    /// Full match set for the search plane's POST-FILTER total (issue
+    /// 00318672): every live asset matching the text/tag filter, in search
+    /// order (updated_at DESC, id DESC), NO limit, NO cursor, compact
+    /// projection (no content — the total pass never renders bodies) with
+    /// batched tag loading. The caller batch-Cedar-filters the result; the
+    /// visible count is the honest total. WHERE shape kept in lockstep with
+    /// `search` — the conformance drift guard asserts id-set equality.
+    async fn search_authz_rows(
+        &self,
+        query: Option<&str>,
+        tag_filters: Vec<(String, String)>,
+    ) -> Result<Vec<Asset>> {
+        let mut query_str = String::from(
+            "SELECT a.id, a.title, a.created_at, a.updated_at, a.created_by, a.updated_by, a.deleted_at, a.visibility, a.confidentiality, a.owner_groups
+             FROM assets a
+             WHERE a.deleted_at IS NULL",
+        );
+
+        // Same quoted-phrase FTS5 reduction as `search` (build_fts_match_query
+        // — the Sep 7-8 expression-injection class).
+        let fts_query: Option<String> = query
+            .filter(|q| !q.is_empty())
+            .map(build_fts_match_query)
+            .filter(|q| !q.is_empty());
+        if fts_query.is_some() {
+            query_str.push_str(
+                " AND a.rowid IN (SELECT assets_fts.rowid FROM assets_fts WHERE assets_fts MATCH ?)",
+            );
+        }
+
+        for _ in &tag_filters {
+            query_str.push_str(
+                " AND EXISTS (SELECT 1 FROM tags t WHERE t.asset_id = a.id AND t.category = ? AND t.value = ?)",
+            );
+        }
+
+        query_str.push_str(" ORDER BY a.updated_at DESC, a.id DESC");
+
+        let mut q = sqlx::query_as::<_, AssetCompactRow>(&query_str);
+
+        if let Some(q_text) = &fts_query {
+            q = q.bind(q_text);
+        }
+
+        for (category, value) in &tag_filters {
+            q = q.bind(category).bind(value);
+        }
+
+        let rows = q.fetch_all(&self.pool).await?;
+        self.hydrate_compact_assets_batched(rows).await
     }
 
     /// Count assets matching the search filter — the true total for
