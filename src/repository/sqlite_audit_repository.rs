@@ -289,12 +289,52 @@ impl AuditRepository for SqliteAuditRepository {
     }
 
     async fn delete_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<u64> {
+        // CHUNKED DELETE (P1 incident 2026-11-22, issue 57bab0a9): the
+        // single-statement form ("DELETE ... WHERE timestamp < ?") held the
+        // leaf's SQLite WRITE LOCK for the whole delete — duration
+        // proportional to candidate volume × disk speed — and the
+        // per-instance 3-connection pool saturated behind it: blocked
+        // writers (every audit-riding write, the THQ reconciler's state
+        // reports) hold a connection for the 5s busy_timeout before failing
+        // SQLITE_BUSY, and readers starve behind them (the THQ console
+        // blackout until a PDT restart). This form re-selects a bounded
+        // chunk per iteration (the timestamp index serves the range; PK
+        // IN-list deletes) and COMMITS per chunk — the write lock is
+        // released between chunks, the WAL auto-checkpoint drains
+        // incrementally, and no reader or writer ever faces a long-held
+        // lock at any volume or disk speed. Rows created mid-prune are
+        // newer than the cutoff and never candidates, so per-chunk
+        // re-selection cannot drift off the archived set.
+        const DELETE_CHUNK: i64 = 500; // = the archive walk's ARCHIVE_PAGE
         let cutoff_str = cutoff.to_rfc3339();
-        let result = sqlx::query("DELETE FROM audit_entries WHERE timestamp < ?")
-            .bind(&cutoff_str)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected())
+        let mut total: u64 = 0;
+        loop {
+            let ids: Vec<(String,)> =
+                sqlx::query_as("SELECT id FROM audit_entries WHERE timestamp < ? LIMIT ?")
+                    .bind(&cutoff_str)
+                    .bind(DELETE_CHUNK)
+                    .fetch_all(&self.pool)
+                    .await?;
+            if ids.is_empty() {
+                break;
+            }
+            let placeholders = vec!["?"; ids.len()].join(", ");
+            let sql = format!("DELETE FROM audit_entries WHERE id IN ({placeholders})");
+            let mut query = sqlx::query(&sql);
+            for (id,) in &ids {
+                query = query.bind(id);
+            }
+            let result = query.execute(&self.pool).await?;
+            total += result.rows_affected();
+            if ids.len() < DELETE_CHUNK as usize {
+                break;
+            }
+            // Yield between chunks: the per-chunk commit already released
+            // the write lock; the sleep also lets a pending WAL checkpoint
+            // drain before the next chunk takes the lock again.
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        Ok(total)
     }
 }
 

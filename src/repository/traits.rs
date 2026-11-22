@@ -364,5 +364,17 @@ pub trait AuditRepository: Send + Sync {
     /// verb. Returns the rows affected. The CALLER archives + verifies the
     /// archive FIRST (archive-then-delete; the archive is the record — no
     /// silent deletes, issue 2c71e4e6).
+    ///
+    /// LOCK-HOLD BOUND (P1 incident 2026-11-22, issue 57bab0a9):
+    /// implementations MUST bound the write-lock hold — chunk the delete
+    /// and commit per chunk (the sqlite implementation deletes in 500-row
+    /// PK chunks with a yield between chunks). A single-statement bulk
+    /// delete holds the store's write lock for a volume × disk-speed
+    /// duration, saturates the per-instance pool behind it (blocked
+    /// writers hold connections for the busy_timeout), and starves the
+    /// read path — the THQ console blackout class. The archive-then-delete
+    /// caller's verify (deleted == archived, post-count 0) is chunk-safe:
+    /// rows created mid-prune are newer than the cutoff and never
+    /// candidates.
     async fn delete_before(&self, cutoff: chrono::DateTime<chrono::Utc>) -> Result<u64>;
 }
