@@ -9,7 +9,12 @@
 //!
 //! This gate drives the REAL pdt binary (sqlite-backend) against an
 //! in-process mock IdP whose userinfo endpoint can be flipped mid-flight:
-//!   phase 1 (enriched)  — fresh sub enriches, canary asset visible: 200 WITH rows
+//!   phase 1 (enriched)  — fresh sub enriches (ROLE lands; claim groups are
+//!                         retired by the pep 0.5.21 drain): the role-only
+//!                         principal answers 200 — the team-banded canary is
+//!                         HONESTLY filtered out (200-empty, legitimate per
+//!                         the CPO drain ruling cb11a8e0/8c7305c8 guard 1)
+//!                         while a PUBLIC control canary stays visible
 //!   phase 2a (dead token)  — userinfo 400 invalid_token (terminal) → honest
 //!                          401-with-retry; a reactive refresh cures it
 //!   phase 2b (degraded)    — userinfo 503 (transient) → a FRESH sub
@@ -17,7 +22,9 @@
 //!                          search → 503 {"error":"auth_degraded","retryable":true}
 //!                          list   → 503 same body
 //!                          asset-GET → fail-closed pre-handler, never 200
-//!   phase 3 (recovered) — userinfo restored; another fresh sub sees 200 WITH rows
+//!   phase 3 (recovered) — userinfo restored; another fresh sub answers 200
+//!                         (never 503 — the role landed), the public canary
+//!                         visible again, the team canary honestly filtered
 //!
 //! Fresh-sub-per-phase is load-bearing: pep caches userinfo by `sub` until
 //! token expiry, so a reused sub would never re-hit the failing endpoint.
@@ -378,7 +385,13 @@ async fn degraded_enrichment_never_answers_200_empty_on_filtered_reads() {
     let title = format!("canary {canary_token}");
     let auth = |sub: &str| format!("Bearer {}", sign_token(&idp.base, sub));
 
-    // ── phase 1: ENRICHED — the control that makes the 503 meaningful ──
+    // ── phase 1: ENRICHED (role landed) — the honest-filter controls ──
+    // Re-pinned 2026-11-22 per the CPO drain ruling (cb11a8e0 / 8c7305c8)
+    // guard 1: role-present + filtered-empty → 200-empty is LEGITIMATE. Under
+    // the pep 0.5.21 drain the enriched principal holds ROLE only (claim
+    // groups retired), so a team-banded canary is honestly invisible to it —
+    // the positive control moves to a PUBLIC canary, which the filter must
+    // still surface (200 WITH rows: the filter is honest, not broken).
     let resp = client
         .post(format!("{}/api/assets", pdt.base))
         .header("Authorization", auth("agent-enriched"))
@@ -406,24 +419,77 @@ async fn degraded_enrichment_never_answers_200_empty_on_filtered_reads() {
     eprintln!("OBSERVED canary created id={asset_id}");
 
     let resp = client
+        .post(format!("{}/api/assets", pdt.base))
+        .header("Authorization", auth("agent-enriched"))
+        .json(&serde_json::json!({
+            "title": format!("public control {canary_token}"),
+            "content": format!("public control body {canary_token}"),
+            "auth_context": {"visibility": "public", "owner_groups": []},
+        }))
+        .send()
+        .await
+        .expect("create public control");
+    assert!(
+        resp.status().is_success(),
+        "public control create must succeed (got {})",
+        resp.status()
+    );
+
+    // Control A (guard direction 1): a DIFFERENT role-only sub (not the
+    // creator — the creator permit would surface its own create regardless
+    // of band) vs the team band → the filter honestly excludes → 200-EMPTY.
+    // Legitimate. NEVER a 503 — the role landed, the classifier says Enriched.
+    let resp = client
         .get(format!("{}/api/search", pdt.base))
         .query(&[("q", canary_token)])
+        .header("Authorization", auth("agent-colleague"))
+        .send()
+        .await
+        .expect("colleague search");
+    assert_eq!(resp.status(), 200, "colleague search must be 200");
+    let body: serde_json::Value = resp.json().await.expect("search body");
+    let rows = body["data"].as_array().expect("data array");
+    assert!(
+        !rows
+            .iter()
+            .any(|r| r["_id"].as_str() == Some(asset_id.as_str())),
+        "role-only principal (claim groups drained, not the creator) must NOT see \
+         the team-banded canary — honest filtered absence"
+    );
+    eprintln!(
+        "OBSERVED phase-1 role-only (different sub) search → 200 with {} rows (team canary \
+         honestly filtered — guard direction 1: role-present + filtered-empty = legitimate)",
+        rows.len()
+    );
+
+    // Control B: the same principal DOES see its public canary — the filter
+    // is honest, not universally dropping (this is what makes the later 503
+    // meaningful: empty would NOT be genuine absence for an enriched principal).
+    let resp = client
+        .get(format!("{}/api/search", pdt.base))
+        .query(&[("q", &format!("public control {canary_token}"))])
         .header("Authorization", auth("agent-enriched"))
         .send()
         .await
-        .expect("enriched search");
-    assert_eq!(resp.status(), 200, "enriched search must be 200");
-    let body: serde_json::Value = resp.json().await.expect("search body");
+        .expect("enriched public search");
+    assert_eq!(resp.status(), 200, "enriched public search must be 200");
+    let body: serde_json::Value = resp.json().await.expect("public search body");
     let hit = body["data"]
         .as_array()
         .expect("data array")
         .iter()
-        .any(|r| r["_id"].as_str() == Some(asset_id.as_str()));
+        .any(|r| {
+            r["title"]
+                .as_str()
+                .map(|t| t.contains("public control"))
+                .unwrap_or(false)
+        });
     assert!(
         hit,
-        "enriched control: canary must be VISIBLE in search (200 WITH rows)"
+        "enriched control: the PUBLIC canary must be VISIBLE in search (200 WITH \
+         rows) — the filter is honest under the drain"
     );
-    eprintln!("OBSERVED phase-1 enriched search 200 with canary visible");
+    eprintln!("OBSERVED phase-1 role-only search → 200 with the public canary visible");
 
     // ── phase 2a: DEAD-TOKEN flavor (userinfo 400 invalid_token) ──
     // Terminal for this token → honest 401-with-retry (b82a1925 contract).
@@ -535,6 +601,11 @@ async fn degraded_enrichment_never_answers_200_empty_on_filtered_reads() {
     );
 
     // ── phase 3: RECOVERED — the window closes honestly ──
+    // Re-pinned per the drain ruling guard 1: the recovered principal lands
+    // ROLE only, so the team canary stays honestly invisible (200-empty,
+    // legitimate) while the public canary is visible again — the recovery
+    // proof is the PUBLIC canary returning, plus the role-only principal
+    // answering 200 (never 503: the role landed, it is not Degraded).
     idp.set_mode(UserinfoMode::Ok);
     let resp = client
         .get(format!("{}/api/search", pdt.base))
@@ -543,18 +614,51 @@ async fn degraded_enrichment_never_answers_200_empty_on_filtered_reads() {
         .send()
         .await
         .expect("recovered search");
-    assert_eq!(resp.status(), 200, "recovered search must be 200");
+    assert_eq!(
+        resp.status(),
+        200,
+        "recovered search must be 200 (role landed — never 503)"
+    );
     let body: serde_json::Value = resp.json().await.expect("recovered body");
+    let rows = body["data"].as_array().expect("data array");
+    assert!(
+        !rows
+            .iter()
+            .any(|r| r["_id"].as_str() == Some(asset_id.as_str())),
+        "recovered role-only principal must NOT see the team-banded canary — \
+         honest filtered absence (guard direction 1)"
+    );
+    eprintln!(
+        "OBSERVED phase-3 recovered search → 200 with {} rows (team canary honestly filtered)",
+        rows.len()
+    );
+    let resp = client
+        .get(format!("{}/api/search", pdt.base))
+        .query(&[("q", &format!("public control {canary_token}"))])
+        .header("Authorization", auth("agent-recovered"))
+        .send()
+        .await
+        .expect("recovered public search");
+    assert_eq!(resp.status(), 200, "recovered public search must be 200");
+    let body: serde_json::Value = resp.json().await.expect("recovered public body");
     let hit = body["data"]
         .as_array()
         .expect("data array")
         .iter()
-        .any(|r| r["_id"].as_str() == Some(asset_id.as_str()));
+        .any(|r| {
+            r["title"]
+                .as_str()
+                .map(|t| t.contains("public control"))
+                .unwrap_or(false)
+        });
     assert!(
         hit,
-        "recovered control: canary visible again after userinfo recovery"
+        "recovered control: the PUBLIC canary visible again after userinfo recovery — \
+         the window closed"
     );
-    eprintln!("OBSERVED phase-3 recovered search 200 with canary visible — window closed");
+    eprintln!(
+        "OBSERVED phase-3 recovered search → 200 with the public canary visible — window closed"
+    );
 
     eprintln!(
         "OBSERVED receipts: userinfo_hits={} , canary={asset_id}",
@@ -564,14 +668,27 @@ async fn degraded_enrichment_never_answers_200_empty_on_filtered_reads() {
 
 // ───────────────────────── born-empty guard (0e583f06) ─────────────────────────
 //
-// GUARD IT: an asset created with NO auth_context must be born with a real
-// band — the caller's cohort (team + caller groups) — never the black-hole
-// visibility="" state that matches no View permit except admin/creator.
-// Attestation: a DIFFERENT sub in the same cohort Views the unstamped create
-// → 200. Before the guard this was the born-mask class (assignees invisible
-// to themselves; 7 manual heals on 2026-10-20 alone).
+// RE-PINNED 2026-11-22 per the CPO ruling on the pep 0.5.21 authz drain
+// (fame semantic cb11a8e0 / payam 8c7305c8) — ITEM 1: BORN-EMPTY = OPTION (a)
+// HONEST-PRIVATE. An unstamped create is born visibility=private,
+// owner_groups=[] — zero code, the contract the drain produces; fail-closed
+// beats inferred-grant (evaluator-consult cohort defaulting at birth would be
+// a birth-time authz inference + a membership lookup on the create path, the
+// exact class the drain retires). Born-private is safe: the creator retains
+// access, bands are raisable. PRODUCT ANSWER for the convenience gap: cohort
+// defaults belong in the CALLER — nghr's create path may pass explicit
+// owner_groups where product wants cohort bands; explicit grant at create,
+// never inferred grant at birth. Revisit only on product evidence of
+// stranding.
+//
+// Historical note (the guard's origin): pre-drain this gate pinned the
+// cohort-band default (0e583f06) against the born-mask class (assignees
+// invisible to themselves; 7 manual heals on 2026-10-20 alone). The drain
+// removes the claim-group input that default consumed, and the ruling
+// re-files the contract at honest-private — the born-mask stays dead (a
+// private band matches no OTHER principal's View permit either).
 #[tokio::test]
-async fn born_empty_create_defaults_to_cohort_band_and_is_visible_to_cohort() {
+async fn born_empty_create_is_honest_private_and_creator_retains_access() {
     let idp = spawn_mock_idp().await;
     let pdt = spawn_pdt(&idp).await;
     let client = wait_health(&pdt.base).await;
@@ -579,20 +696,20 @@ async fn born_empty_create_defaults_to_cohort_band_and_is_visible_to_cohort() {
 
     let auth = |sub: &str| format!("Bearer {}", sign_token(&idp.base, sub));
 
-    // ── phase 1: creator creates with NO auth_context ──
+    // ── phase 1: creator creates with NO auth_context → born honest-private ──
     let resp = client
         .post(format!("{}/api/assets", pdt.base))
         .header("Authorization", auth("creator-alice"))
         .json(&serde_json::json!({
             "title": "born-empty guard canary 0e583f06",
-            "content": "unstamped create — must be born cohort-banded",
+            "content": "unstamped create — born honest-private per the drain ruling",
         }))
         .send()
         .await
         .expect("create unstamped");
     assert!(
         resp.status().is_success(),
-        "unstamped create must succeed (guard defaults, never refuses a cohort caller) — got {}",
+        "unstamped create must succeed (never refuses a cohort caller) — got {}",
         resp.status()
     );
     let created: serde_json::Value = resp.json().await.expect("create body");
@@ -610,29 +727,46 @@ async fn born_empty_create_defaults_to_cohort_band_and_is_visible_to_cohort() {
         "OBSERVED unstamped create born visibility={stored_visibility} owner_groups={stored_groups:?}"
     );
     assert_eq!(
-        stored_visibility, "team",
-        "guard must default an empty band to the caller's cohort (team)"
+        stored_visibility, "private",
+        "ruling item 1 (a): unstamped create is born honest-private — never an \
+         inferred cohort grant at birth"
     );
     assert!(
-        stored_groups.iter().any(|g| g.as_str() == Some(GROUP)),
-        "guard must fill owner_groups from the caller's groups claim"
+        stored_groups.is_empty(),
+        "ruling item 1 (a): born owner_groups=[] — no inferred grant, the caller \
+         passes explicit owner_groups when product wants cohort bands"
     );
 
-    // ── phase 2: a DIFFERENT sub in the same cohort Views the asset → 200 ──
-    // The born-mask class: before the guard this asset carried visibility=""
-    // and matched no View permit for bob (different sub, not the creator).
+    // ── phase 2: the CREATOR retains access; a different sub is fail-closed ──
+    let resp = client
+        .get(format!("{}/api/assets/{asset_id}", pdt.base))
+        .header("Authorization", auth("creator-alice"))
+        .send()
+        .await
+        .expect("creator view");
+    assert_eq!(
+        resp.status(),
+        200,
+        "born-private is safe: the creator retains access to its own create"
+    );
+    eprintln!("OBSERVED creator Views the born-private create → 200");
     let resp = client
         .get(format!("{}/api/assets/{asset_id}", pdt.base))
         .header("Authorization", auth("assignee-bob"))
         .send()
         .await
-        .expect("cohort view");
-    assert_eq!(
+        .expect("other-sub view");
+    assert_ne!(
         resp.status(),
         200,
-        "cohort member (different sub, same group) must View the unstamped create — the born-mask is dead"
+        "a different sub must NOT view a born-private create (fail-closed; the \
+         convenience gap is answered by explicit owner_groups at create, per \
+         the ruling's product answer)"
     );
-    eprintln!("OBSERVED cohort member bob (different sub) Views the unstamped create → 200");
+    eprintln!(
+        "OBSERVED different sub bob Views the born-private create → {} (fail-closed)",
+        resp.status()
+    );
 
     // ── phase 3: explicit empty-visibility + owner_groups normalizes to team ──
     let resp = client

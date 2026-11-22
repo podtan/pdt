@@ -2188,7 +2188,7 @@ dependencies = [
 
 [[package]]
 name = "pdt"
-version = "0.3.40"
+version = "0.3.41"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2240,9 +2240,9 @@ dependencies = [
 
 [[package]]
 name = "pep"
-version = "0.5.16"
+version = "0.5.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "188c6200c03c20268d07840e66cb00e95b0b1e5f2ccf1e380fd79c3ef3837ce4"
+checksum = "d81380e36adacbbc2fec4fdb7f6999a05cef2134981da62f7f3be01399ea7c45"
 dependencies = [
  "anyhow",
  "axum",

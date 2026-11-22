@@ -28,25 +28,47 @@ use serde::{Deserialize, Serialize};
 /// instead. Zero-rows must mean zero-rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthEnrichment {
-    /// Authorization material (groups and/or role) is present — Cedar
-    /// evaluation is honest whatever it decides.
+    /// Authorization material (role) is present — Cedar evaluation is honest
+    /// whatever it decides. (Claim GROUPS retired as authorization material
+    /// by the pep 0.5.21 authz drain — they can no longer certify
+    /// enrichment.)
     Enriched,
-    /// Enrichment produced NO authorization material. On this platform's
-    /// Kanidm IdP access tokens carry no identity claims (tocpi 0.7.2
-    /// finding), so groups/role can only arrive via the userinfo merge; a
-    /// zero-attribute principal after an enrichment attempt means that
-    /// merge failed (pep treats userinfo HTTP errors as non-fatal Ok —
-    /// the 2026-10-07 payam F1 window). Filtered reads must not answer 200.
+    /// Enrichment produced NO role. On this platform's Kanidm IdP access
+    /// tokens carry no identity claims (tocpi 0.7.2 finding), so role can
+    /// only arrive via the userinfo merge; a role-less principal after an
+    /// enrichment attempt means that merge failed or landed empty (pep
+    /// treats userinfo HTTP errors as non-fatal Ok — the 2026-10-07 payam
+    /// F1 window). Filtered reads must not answer 200.
+    ///
+    /// Classifier re-key per the CPO ruling of 2026-11-22 (fame semantic
+    /// cb11a8e0 / payam 8c7305c8): Degraded iff no ROLE landed. The groups
+    /// arm retired with the pep 0.5.21 drain — under it no principal
+    /// carries claim groups, so a groups disjunct would classify every
+    /// principal Degraded. The 365be03f invariant survives byte-for-byte: a
+    /// zero-attribute principal never answers 200-empty.
     Degraded,
 }
 
 /// Classify claims that have just been through enrichment.
 ///
-/// Degraded ⇔ neither `groups` nor `role` landed. Any landed attribute makes
-/// Cedar's deny/allow decision truthful (it evaluates real data the principal
-/// verifiably holds); the lie requires a fully zero-attribute principal.
+/// Re-keyed 2026-11-22 per CPO ruling (cb11a8e0 / 8c7305c8) — see the
+/// comment inside for the full rationale and the standing note.
 pub fn classify_enrichment(claims: &JwtClaims) -> AuthEnrichment {
-    if claims.extra.contains_key("groups") || claims.extra.contains_key("role") {
+    // Degraded iff no `role` landed (CPO ruling 2026-11-22, fame semantic
+    // cb11a8e0 / payam 8c7305c8): the pep 0.5.21 authz drain retires claim
+    // GROUPS as authorization material, so a landed-groups disjunct would
+    // classify every principal Degraded. A landed role makes Cedar's
+    // deny/allow decision truthful (it evaluates real data the principal
+    // verifiably holds); the lie requires a role-less principal whose
+    // filtered reads would answer 200-empty. The 365be03f invariant is
+    // byte-for-byte: a zero-attribute principal (no role, no groups anywhere
+    // -- the handler gates also require empty PDT-native memberships) never
+    // answers 200-empty.
+    //
+    // STANDING NOTE (ruling guard 2): if pep ever drains ROLES too, this
+    // classifier needs a REDESIGN (a new source of truth for "material
+    // landed"), never a silent pass-through.
+    if claims.extra.contains_key("role") {
         AuthEnrichment::Enriched
     } else {
         AuthEnrichment::Degraded
@@ -233,7 +255,8 @@ where
                     let enrichment = classify_enrichment(&claims);
                     if enrichment == AuthEnrichment::Degraded {
                         tracing::warn!(
-                            "Auth: enrichment landed EMPTY (no groups/role after userinfo) \
+                            "Auth: enrichment landed EMPTY (no role after userinfo; claim \
+                             groups retired by the pep 0.5.21 drain) \
                              — marking request AUTH-DEGRADED; visibility-filtered reads \
                              will answer 503 auth_degraded (issue 365be03f)"
                         );

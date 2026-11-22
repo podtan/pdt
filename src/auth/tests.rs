@@ -278,9 +278,14 @@ mod enrichment_classification {
     }
 
     #[test]
-    fn groups_present_is_enriched() {
+    fn groups_only_is_degraded_after_the_pep_0521_drain() {
+        // CPO ruling 2026-11-22 (cb11a8e0 / 8c7305c8): the pep 0.5.21 authz
+        // drain retires claim GROUPS as authorization material — a
+        // groups-bearing principal is no longer possible on the wire, so
+        // groups alone can no longer certify enrichment. Degraded is keyed
+        // on ROLE only; the groups arm retired with the drain.
         let claims = claims_with(&[("groups", serde_json::json!(["plt-agents"]))]);
-        assert_eq!(classify_enrichment(&claims), AuthEnrichment::Enriched);
+        assert_eq!(classify_enrichment(&claims), AuthEnrichment::Degraded);
     }
 
     #[test]
@@ -288,6 +293,17 @@ mod enrichment_classification {
         // Service accounts with a mapped role carry real authorization
         // material — Cedar's evaluation with it is honest (no lie possible).
         let claims = claims_with(&[("role", serde_json::json!("admin"))]);
+        assert_eq!(classify_enrichment(&claims), AuthEnrichment::Enriched);
+    }
+
+    #[test]
+    fn groups_and_role_is_enriched() {
+        // The pre-drain wire shape (role + groups): role present → Enriched,
+        // whatever else rides along.
+        let claims = claims_with(&[
+            ("groups", serde_json::json!(["plt-agents"])),
+            ("role", serde_json::json!("member")),
+        ]);
         assert_eq!(classify_enrichment(&claims), AuthEnrichment::Enriched);
     }
 
