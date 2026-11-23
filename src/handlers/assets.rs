@@ -1,7 +1,7 @@
 //! Asset handlers
 
 use axum::{
-    extract::{Path, Query},
+    extract::{Path, Query, State},
     Json,
 };
 use pep::oidc::types::JwtClaims;
@@ -16,6 +16,7 @@ use crate::models::{
     PaginatedResponse, Tag, UpdateAssetRequest, UpdateAuthContextRequest,
 };
 use crate::service::AssetService;
+use crate::tenant::TenantPoolManager;
 
 fn default_limit() -> i64 {
     20
@@ -64,12 +65,47 @@ pub struct ListAssetsParams {
     tag = "assets",
 )]
 pub async fn create_asset(
+    State(manager): State<TenantPoolManager>,
     tx: TenantState,
     user: AuthenticatedUser,
     Json(request): Json<CreateAssetRequest>,
 ) -> Result<Json<Asset>> {
     let user_id = &user.user_id;
     let caller_groups = extract_caller_groups(&user);
+    let asset_type = request
+        .tags
+        .iter()
+        .find(|t| t.category == "type")
+        .map(|t| t.value.clone());
+
+    // WORKSPACE DEFAULT BAND (ca989667 — the pdt-side create cohort grant,
+    // CPO GO 2026-11-23): resolve the store-side config ONLY for band-less
+    // collaboration creates (the predicate is pure; the config read is
+    // I/O and gated on it). Unconfigured workspaces pass None — the ruled
+    // born-empty honest-private semantics stand untouched. The global
+    // store (no X-Instance-Id) is never configured: the grant is a
+    // per-workspace, explicitly-administered policy, never global.
+    let ws_default = if crate::service::workspace_default_applies(
+        request.auth_context.as_ref(),
+        asset_type.as_deref(),
+    ) && tx.instance_id().is_some()
+    {
+        match manager.read_default_band(tx.instance_id().unwrap()).await {
+            Ok(band) => band,
+            Err(e) => {
+                // Config read failure must never fail the create — fail
+                // toward unconfigured (the ruled semantics), warn loud.
+                tracing::warn!(
+                    "WORKSPACE DEFAULT BAND (ca989667): config read failed for instance \
+                     {} ({e}) — treating as unconfigured",
+                    tx.instance_id().unwrap()
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // PRE-WRITE CEDAR CONSULT (instance-type Create fail-open fix — kavosh
     // #222, CPO ruling ENFORCE, Rahnama patch-class acceptance): create was
@@ -78,15 +114,17 @@ pub async fn create_asset(
     // stored assets, so it dead-lettered on create and a non-admin could
     // POST an instance-type asset directly (wire proof: 200 created,
     // rollback DELETE 403). The consult runs on a REQUEST-DERIVED resource
-    // (asset_type from the payload tags, the guarded birth auth_context the
-    // store will persist) so the forbid fires pre-write. Ordinary-asset
+    // (asset_type from the payload tags, the FULLY-RESOLVED birth
+    // auth_context the store will persist — guard ladder + workspace
+    // default, the same composition the service applies). Ordinary-asset
     // Create stays any-authenticated (the unconditional Create permit;
-    // ruling 9e32f9ba untouched). The guard is idempotent on an
-    // already-guarded context, so the service's re-guard below is a no-op.
+    // ruling 9e32f9ba untouched).
     if let Some(authorizer) = tx.authorizer() {
-        let guarded_ctx = crate::service::guard_birth_auth_context(
+        let (guarded_ctx, _) = crate::service::resolve_birth_auth_context(
             request.auth_context.clone(),
             &caller_groups,
+            asset_type.as_deref(),
+            ws_default.as_ref(),
             user_id,
         );
         let probe = Asset {
@@ -127,7 +165,15 @@ pub async fn create_asset(
         .await?;
     }
 
-    let asset = AssetService::create(tx.services(), request, user_id, &caller_groups).await?;
+    let asset = AssetService::create(
+        tx.services(),
+        request,
+        user_id,
+        &caller_groups,
+        ws_default.as_ref(),
+        tx.instance_id(),
+    )
+    .await?;
     Ok(Json(asset))
 }
 
@@ -573,6 +619,6 @@ pub async fn update_auth_context(
 ///
 /// Reconstructs JwtClaims preserving the original `extra` map (role, groups, etc.)
 /// that was extracted from the real JWT by the auth middleware.
-fn extract_claims(user: &AuthenticatedUser) -> JwtClaims {
+pub(crate) fn extract_claims(user: &AuthenticatedUser) -> JwtClaims {
     user.to_cedar_claims()
 }

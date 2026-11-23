@@ -15,7 +15,7 @@ pub use asset::{
     SearchIndexDrift, SearchResult, TagSummary, UpdateAssetRequest, UpdateAuthContextRequest,
 };
 pub use audit::{AuditAction, AuditEntry};
-pub use auth_context::AuthContext;
+pub use auth_context::{AuthContext, WorkspaceDefaultBand};
 pub use collection::{
     AddAssetRequest, Collection, CreateCollectionRequest, UpdateCollectionRequest,
 };

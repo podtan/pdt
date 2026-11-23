@@ -214,6 +214,21 @@ pub fn build_router(
             "/api/instances/sizes",
             get(handlers::instances::list_instance_sizes),
         )
+        // Workspace default band (ca989667 — the pdt-side create cohort
+        // grant): the EXPLICIT per-workspace admin surface. Platform-admin
+        // gated; config lives next to the instance's own pdt.db.
+        .route(
+            "/api/instances/{instance_id}/default-band",
+            axum::routing::put(handlers::instances::put_instance_default_band),
+        )
+        .route(
+            "/api/instances/{instance_id}/default-band",
+            get(handlers::instances::get_instance_default_band),
+        )
+        .route(
+            "/api/instances/{instance_id}/default-band",
+            axum::routing::delete(handlers::instances::delete_instance_default_band),
+        )
         // Middleware (auth + tracing + CORS)
         .layer(TraceLayer::new_for_http())
         .layer(auth_layer.clone())

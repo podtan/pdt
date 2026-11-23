@@ -1331,6 +1331,30 @@
         }
       }
     },
+    "/api/instances/sizes": {
+      "get": {
+        "tags": [
+          "instances"
+        ],
+        "summary": "Per-instance store sizes — the FILESYSTEM inventory (read-only stat\nwalk), not the lazy pool state: idle nested leaves are invisible to\n/api/instances (d2a4e0ca) but their bands still hold data the\ninventory-guard must watch (the b19929a4 hot-store class). Read-only\nby construction — performs zero writes, opens zero pools.",
+        "operationId": "list_instance_sizes",
+        "responses": {
+          "200": {
+            "description": "Per-instance store sizes, sorted by total bytes descending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/InstanceStoreSize"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/instances/tree": {
       "get": {
         "tags": [
@@ -1383,6 +1407,127 @@
           },
           "404": {
             "description": "Instance not found"
+          }
+        }
+      }
+    },
+    "/api/instances/{instance_id}/default-band": {
+      "get": {
+        "tags": [
+          "instances"
+        ],
+        "summary": "Read the workspace default band for an instance (admin-gated read-back\nfor verify flows). 404 when unconfigured — an absent config IS the\nunconfigured state (the ruled honest-private semantics stand).",
+        "operationId": "get_instance_default_band",
+        "parameters": [
+          {
+            "name": "instance_id",
+            "in": "path",
+            "description": "Instance ID (UUID) to read",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The configured default band",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceDefaultBandBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform-admin only"
+          },
+          "404": {
+            "description": "Not configured (or instance not provisioned)"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "instances"
+        ],
+        "summary": "Configure the workspace default band for an instance (ca989667 guard 3 —\nthe EXPLICIT per-workspace admin action). Validates the band shape\n(team + non-empty cohort), requires the instance to be provisioned, and\nwrites the store-side config atomically. Takes effect on the NEXT\nband-less collaboration create; existing rows are never touched.",
+        "operationId": "put_instance_default_band",
+        "parameters": [
+          {
+            "name": "instance_id",
+            "in": "path",
+            "description": "Instance ID (UUID) to configure",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceDefaultBandBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Default band configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceDefaultBandBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid instance id or invalid band shape"
+          },
+          "403": {
+            "description": "Platform-admin only"
+          },
+          "404": {
+            "description": "Instance not provisioned"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "instances"
+        ],
+        "summary": "Remove the workspace default band (back to the ruled honest-private\nsemantics for future band-less collaboration creates). Idempotent.",
+        "operationId": "delete_instance_default_band",
+        "parameters": [
+          {
+            "name": "instance_id",
+            "in": "path",
+            "description": "Instance ID (UUID) to unconfigure",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether a config was removed",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Platform-admin only"
+          },
+          "404": {
+            "description": "Instance not provisioned"
           }
         }
       }
@@ -2390,6 +2535,39 @@
           }
         }
       },
+      "InstanceStoreSize": {
+        "type": "object",
+        "description": "A per-instance store-size row (the inventory-guard's growth watch —\nthe store owner reports its own sizes; paydar's dc33b060 ask).",
+        "required": [
+          "instance_id",
+          "store_bytes",
+          "wal_bytes"
+        ],
+        "properties": {
+          "instance_id": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Parent workspace id when the instance is nested (companies, agents)."
+          },
+          "store_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The pdt.db file size in bytes.",
+            "minimum": 0
+          },
+          "wal_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The SQLite write-ahead log (pdt.db-wal) size in bytes.",
+            "minimum": 0
+          }
+        }
+      },
       "InstanceTreeNode": {
         "type": "object",
         "description": "A node in the instance tree.",
@@ -3034,6 +3212,27 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "WorkspaceDefaultBandBody": {
+        "type": "object",
+        "description": "The workspace default band payload (write body / read response).",
+        "required": [
+          "visibility",
+          "owner_groups"
+        ],
+        "properties": {
+          "owner_groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Default cohort groups (group-membership forms only)."
+          },
+          "visibility": {
+            "type": "string",
+            "description": "Default visibility for band-less collaboration creates. \"team\" only."
           }
         }
       }

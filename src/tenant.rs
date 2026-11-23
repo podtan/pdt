@@ -34,6 +34,8 @@ use anyhow::{Context, Result};
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+use crate::models::WorkspaceDefaultBand;
 use tracing::{info, warn};
 
 use crate::repository::{
@@ -449,6 +451,118 @@ impl TenantPoolManager {
             self.provision_instance(child, Some(workspace_id)).await?;
         }
         Ok(())
+    }
+
+    /// The directory hosting an instance's `pdt.db` (the band directory —
+    /// same resolution as [`Self::audit_archive_dir`]). The workspace
+    /// default-band config lives HERE, next to the store it governs:
+    /// per-store by construction, never inherited from a parent workspace
+    /// (ca989667 guard 3).
+    pub async fn instance_dir(&self, instance_id: &str) -> Result<PathBuf> {
+        let db_path = self.locate_db(instance_id).await?;
+        Ok(db_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.instances_dir.clone()))
+    }
+
+    /// Read the workspace default band for an instance (ca989667). `None`
+    /// when unconfigured — the ruled born-empty honest-private semantics
+    /// stand untouched. A present-but-invalid config file fails TOWARD
+    /// unconfigured (warn loud, treat as None): a broken policy file must
+    /// never widen visibility beyond what an admin explicitly wrote, and
+    /// never silently change the ruled default either.
+    pub async fn read_default_band(
+        &self,
+        instance_id: &str,
+    ) -> Result<Option<WorkspaceDefaultBand>> {
+        validate_uuid(instance_id)?;
+        let path = self
+            .instance_dir(instance_id)
+            .await?
+            .join("default_band.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) => match serde_json::from_slice::<WorkspaceDefaultBand>(&bytes) {
+                Ok(band) => match band.validate() {
+                    Ok(()) => Ok(Some(band)),
+                    Err(e) => {
+                        warn!(
+                            "WORKSPACE DEFAULT BAND (ca989667): config at {:?} failed shape \
+                             validation ({e}) — treating the workspace as UNCONFIGURED \
+                             (born-empty honest-private stands)",
+                            path
+                        );
+                        Ok(None)
+                    }
+                },
+                Err(e) => {
+                    warn!(
+                        "WORKSPACE DEFAULT BAND (ca989667): config at {:?} is invalid ({e}) — \
+                         treating the workspace as UNCONFIGURED (born-empty honest-private stands)",
+                        path
+                    );
+                    Ok(None)
+                }
+            },
+            Err(e) => {
+                warn!(
+                    "WORKSPACE DEFAULT BAND (ca989667): config at {:?} unreadable ({e}) — \
+                     treating the workspace as UNCONFIGURED",
+                    path
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// Write the workspace default band for an instance (the EXPLICIT
+    /// per-workspace admin action — ca989667 guard 3). Validates the band
+    /// shape, requires the instance to be provisioned, and writes
+    /// atomically (temp + rename) so a create never reads a half-file.
+    pub async fn write_default_band(
+        &self,
+        instance_id: &str,
+        band: &WorkspaceDefaultBand,
+    ) -> Result<PathBuf> {
+        validate_uuid(instance_id)?;
+        band.validate().map_err(|e| anyhow::Error::msg(e))?;
+        // The instance must exist — the config governs a real store, never
+        // a hypothetical one (same provisioned-only rule as the request
+        // path, issue 44b13a5f).
+        let dir = self.instance_dir(instance_id).await?;
+        let path = dir.join("default_band.json");
+        let tmp = dir.join(".default_band.json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec_pretty(band)?)?;
+        std::fs::rename(&tmp, &path)?;
+        info!(
+            "WORKSPACE DEFAULT BAND (ca989667): instance {} configured — visibility={}, \
+             owner_groups={:?} at {:?}",
+            instance_id, band.visibility, band.owner_groups, path
+        );
+        Ok(path)
+    }
+
+    /// Remove the workspace default band (back to the ruled honest-private
+    /// semantics). Returns whether a config was present.
+    pub async fn delete_default_band(&self, instance_id: &str) -> Result<bool> {
+        validate_uuid(instance_id)?;
+        let path = self
+            .instance_dir(instance_id)
+            .await?
+            .join("default_band.json");
+        if !path.exists() {
+            return Ok(false);
+        }
+        std::fs::remove_file(&path)?;
+        info!(
+            "WORKSPACE DEFAULT BAND (ca989667): instance {} config removed — \
+             born-empty honest-private stands again",
+            instance_id
+        );
+        Ok(true)
     }
 
     /// Recursively delete an instance and all of its children.
@@ -986,6 +1100,127 @@ mod tests {
             let tree = mgr.list_instance_tree();
             assert!(tree.contains(&(ws.clone(), None)));
             assert!(tree.contains(&(ws, Some(child))));
+        }
+
+        #[tokio::test]
+        async fn default_band_write_read_delete_roundtrip() {
+            // ca989667: the EXPLICIT per-workspace admin surface — write,
+            // read back, delete, read back None.
+            let mgr = manager_with_dir().await;
+            let ws = uuid::Uuid::new_v4().to_string();
+            mgr.provision_instance(&ws, None).await.unwrap();
+
+            // Unconfigured reads None (the ruled honest-private stands).
+            assert!(mgr.read_default_band(&ws).await.unwrap().is_none());
+
+            let band = WorkspaceDefaultBand {
+                visibility: "team".to_string(),
+                owner_groups: vec![
+                    "plt-agents@idp.tanbal.ir".to_string(),
+                    "plt-agents".to_string(),
+                ],
+            };
+            mgr.write_default_band(&ws, &band).await.unwrap();
+            let read = mgr
+                .read_default_band(&ws)
+                .await
+                .unwrap()
+                .expect("configured");
+            assert_eq!(read, band);
+
+            assert!(mgr.delete_default_band(&ws).await.unwrap());
+            assert!(!mgr.delete_default_band(&ws).await.unwrap()); // idempotent
+            assert!(mgr.read_default_band(&ws).await.unwrap().is_none());
+        }
+
+        #[tokio::test]
+        async fn default_band_never_inherited_from_parent_workspace() {
+            // ca989667 guard 3: the config lives NEXT TO the instance's own
+            // pdt.db — a parent workspace's config must NEVER cascade to a
+            // child store (and a child's config must not leak to the parent).
+            let mgr = manager_with_dir().await;
+            let ws = uuid::Uuid::new_v4().to_string();
+            let child = uuid::Uuid::new_v4().to_string();
+            mgr.provision_instance(&ws, None).await.unwrap();
+            mgr.provision_instance(&child, Some(&ws)).await.unwrap();
+
+            let band = WorkspaceDefaultBand {
+                visibility: "team".to_string(),
+                owner_groups: vec!["plt-agents".to_string()],
+            };
+            mgr.write_default_band(&ws, &band).await.unwrap();
+
+            // The child store reads None — no inheritance, ever.
+            assert!(mgr.read_default_band(&child).await.unwrap().is_none());
+            // The parent reads its own config.
+            assert!(mgr.read_default_band(&ws).await.unwrap().is_some());
+
+            // And the reverse: a child-scoped config is invisible to the parent.
+            let child_band = WorkspaceDefaultBand {
+                visibility: "team".to_string(),
+                owner_groups: vec!["other-cohort".to_string()],
+            };
+            mgr.write_default_band(&child, &child_band).await.unwrap();
+            let read_child = mgr.read_default_band(&child).await.unwrap().unwrap();
+            assert_eq!(read_child.owner_groups, vec!["other-cohort".to_string()]);
+        }
+
+        #[tokio::test]
+        async fn default_band_rejects_non_team_and_empty_cohort() {
+            // ca989667: the grant is a COHORT band — "public" (world-visible)
+            // and empty-cohort shapes are rejected at the write surface.
+            let mgr = manager_with_dir().await;
+            let ws = uuid::Uuid::new_v4().to_string();
+            mgr.provision_instance(&ws, None).await.unwrap();
+
+            let public_band = WorkspaceDefaultBand {
+                visibility: "public".to_string(),
+                owner_groups: vec!["plt-agents".to_string()],
+            };
+            assert!(mgr.write_default_band(&ws, &public_band).await.is_err());
+
+            let empty_cohort = WorkspaceDefaultBand {
+                visibility: "team".to_string(),
+                owner_groups: vec![],
+            };
+            assert!(mgr.write_default_band(&ws, &empty_cohort).await.is_err());
+
+            // Nothing was written by the rejected attempts.
+            assert!(mgr.read_default_band(&ws).await.unwrap().is_none());
+        }
+
+        #[tokio::test]
+        async fn default_band_invalid_config_fails_toward_unconfigured() {
+            // ca989667: a present-but-invalid config file is treated as
+            // UNCONFIGURED (warn loud) — a broken policy file never widens
+            // visibility and never silently changes the ruled default.
+            let mgr = manager_with_dir().await;
+            let ws = uuid::Uuid::new_v4().to_string();
+            mgr.provision_instance(&ws, None).await.unwrap();
+            let dir = mgr.instance_dir(&ws).await.unwrap();
+            std::fs::write(dir.join("default_band.json"), b"{ not json").unwrap();
+            assert!(mgr.read_default_band(&ws).await.unwrap().is_none());
+
+            // A semantically-invalid band (public) on disk is also unconfigured.
+            std::fs::write(
+                dir.join("default_band.json"),
+                br#"{"visibility":"public","owner_groups":["x"]}"#,
+            )
+            .unwrap();
+            assert!(mgr.read_default_band(&ws).await.unwrap().is_none());
+        }
+
+        #[tokio::test]
+        async fn default_band_requires_provisioned_instance() {
+            // The config governs a REAL store, never a hypothetical one
+            // (same provisioned-only rule as the request path, 44b13a5f).
+            let mgr = manager_with_dir().await;
+            let ghost = uuid::Uuid::new_v4().to_string();
+            let band = WorkspaceDefaultBand {
+                visibility: "team".to_string(),
+                owner_groups: vec!["plt-agents".to_string()],
+            };
+            assert!(mgr.write_default_band(&ghost, &band).await.is_err());
         }
     }
 }

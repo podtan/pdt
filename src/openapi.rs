@@ -67,6 +67,9 @@ use utoipa::OpenApi;
         crate::handlers::instances::list_instances,
         crate::handlers::instances::list_instance_tree,
         crate::handlers::instances::list_instance_sizes,
+        crate::handlers::instances::put_instance_default_band,
+        crate::handlers::instances::get_instance_default_band,
+        crate::handlers::instances::delete_instance_default_band,
         // Group routes (PDT-native per-instance groups, a9f91cfb)
         crate::handlers::group::create_group,
         crate::handlers::group::list_groups,
@@ -102,6 +105,7 @@ use utoipa::OpenApi;
         crate::handlers::maintenance::AuditPruneRequest,
         crate::handlers::maintenance::ReconcileRequest,
         crate::handlers::instances::InstanceStoreSize,
+        crate::handlers::instances::WorkspaceDefaultBandBody,
         crate::service::relation_service::GraphNode,
         crate::handlers::cedar::CedarPolicyResponse,
         crate::models::roles::RoleAnswer,

@@ -275,6 +275,8 @@ async fn sqlite_asset_metadata_update_audits_key_delta() {
         common::make_asset_request("Audited", "body"),
         user,
         &[],
+        None,
+        None,
     )
     .await
     .expect("seed asset");
@@ -759,6 +761,8 @@ async fn prune_dry_run_reports_numbers_zero_writes() {
             ),
             user,
             &[],
+            None,
+            None,
         )
         .await
         .expect("seed asset");
@@ -768,6 +772,8 @@ async fn prune_dry_run_reports_numbers_zero_writes() {
         common::make_asset_request_with_tags("keep me", "body", vec![("type", "invoice")]),
         user,
         &[],
+        None,
+        None,
     )
     .await
     .expect("seed other-class asset");
@@ -819,6 +825,8 @@ async fn prune_execute_is_soft_delete_only_with_audit() {
         common::make_asset_request_with_tags("old report", "body", vec![("type", "report")]),
         user,
         &[],
+        None,
+        None,
     )
     .await
     .expect("seed candidate");
@@ -827,6 +835,8 @@ async fn prune_execute_is_soft_delete_only_with_audit() {
         common::make_asset_request_with_tags("keep me", "body", vec![("type", "invoice")]),
         user,
         &[],
+        None,
+        None,
     )
     .await
     .expect("seed other-class asset");
@@ -883,6 +893,8 @@ async fn prune_age_filter_matches_only_older_than_window() {
         common::make_asset_request_with_tags("old report", "body", vec![("type", "report")]),
         user,
         &[],
+        None,
+        None,
     )
     .await
     .expect("seed old asset");
@@ -891,6 +903,8 @@ async fn prune_age_filter_matches_only_older_than_window() {
         common::make_asset_request_with_tags("fresh report", "body", vec![("type", "report")]),
         user,
         &[],
+        None,
+        None,
     )
     .await
     .expect("seed fresh asset");
@@ -960,6 +974,8 @@ async fn asset_delete_audit_carries_cascade_relations() {
         common::make_asset_request("parent", "body"),
         user,
         &[],
+        None,
+        None,
     )
     .await
     .expect("seed parent");
@@ -968,6 +984,8 @@ async fn asset_delete_audit_carries_cascade_relations() {
         common::make_asset_request("child", "body"),
         user,
         &[],
+        None,
+        None,
     )
     .await
     .expect("seed child");
@@ -976,6 +994,8 @@ async fn asset_delete_audit_carries_cascade_relations() {
         common::make_asset_request("other", "body"),
         user,
         &[],
+        None,
+        None,
     )
     .await
     .expect("seed unrelated");
@@ -1585,4 +1605,128 @@ async fn sqlite_reconcile_detects_and_repairs_orphaned_index_rowid() {
         hits.0.is_empty(),
         "the repaired index no longer advertises the orphaned rowid"
     );
+}
+
+// ============================================================================
+// WORKSPACE DEFAULT BAND (ca989667 — the pdt-side create cohort grant)
+// ============================================================================
+//
+// Store-level proof of the CPO GO's four guards at the SERVICE layer:
+// the band applies to band-less collaboration creates in a configured
+// workspace, explicit stamps always win, unconfigured workspaces keep the
+// ruled honest-private, and every application is recorded in the audit log
+// (workspace + band) so any future verify can reconstruct provenance.
+
+/// The forward-class fix first-hand: an agent-direct band-less issue create
+/// (no groups claim — the exact shape that stranded the re-band cohort)
+/// lands on the CONFIGURED cohort band, not honest-private.
+#[tokio::test]
+async fn workspace_default_band_applies_to_bandless_issue_create() {
+    use pdt::models::WorkspaceDefaultBand;
+    use pdt::service::{AssetService, Services};
+
+    let services = setup_services().await;
+    let band = WorkspaceDefaultBand {
+        visibility: "team".to_string(),
+        owner_groups: vec![
+            "plt-agents@idp.tanbal.ir".to_string(),
+            "plt-agents".to_string(),
+        ],
+    };
+    let created = AssetService::create(
+        &services,
+        common::make_asset_request_with_tags(
+            "forward-class issue",
+            "body",
+            vec![("type", "issue")],
+        ),
+        "agent-direct-caller",
+        &[], // agent tokens carry no groups claim — the stranded shape
+        Some(&band),
+        Some("4b31ec2d-workspace"),
+    )
+    .await
+    .expect("band-less issue create");
+    let ctx = created.auth_context.expect("guarded birth context");
+    assert_eq!(ctx.visibility, "team");
+    assert_eq!(
+        ctx.owner_groups,
+        vec![
+            "plt-agents@idp.tanbal.ir".to_string(),
+            "plt-agents".to_string()
+        ]
+    );
+
+    // GUARD 4: the audit record names the workspace + the band applied.
+    let history = pdt::service::AuditService::get_asset_history(&services, &created.id, 10)
+        .await
+        .expect("audit history");
+    let create_entry = history
+        .iter()
+        .find(|e| e.action == pdt::models::AuditAction::Create)
+        .expect("create audit entry");
+    assert_eq!(
+        create_entry.changes.get("birth_band_source"),
+        Some(&serde_json::json!("workspace_default_band"))
+    );
+    assert_eq!(
+        create_entry.changes.get("workspace_id"),
+        Some(&serde_json::json!("4b31ec2d-workspace"))
+    );
+    assert_eq!(
+        create_entry.changes.get("default_band"),
+        Some(&serde_json::json!({
+            "visibility": "team",
+            "owner_groups": ["plt-agents@idp.tanbal.ir", "plt-agents"],
+        }))
+    );
+}
+
+/// GUARD 1 at the store level: an explicit stamp is never overwritten by
+/// the configured default.
+#[tokio::test]
+async fn workspace_default_band_never_overwrites_explicit_stamp() {
+    use pdt::models::{AuthContext, WorkspaceDefaultBand};
+    use pdt::service::{AssetService, Services};
+
+    let services = setup_services().await;
+    let band = WorkspaceDefaultBand {
+        visibility: "team".to_string(),
+        owner_groups: vec!["plt-agents".to_string()],
+    };
+    let mut req =
+        common::make_asset_request_with_tags("explicit private", "body", vec![("type", "issue")]);
+    req.auth_context = Some(AuthContext {
+        visibility: "private".to_string(),
+        owner_groups: vec![],
+        confidentiality: String::new(),
+    });
+    let created = AssetService::create(&services, req, "agent", &[], Some(&band), Some("ws"))
+        .await
+        .expect("explicit-stamp create");
+    let ctx = created.auth_context.expect("context");
+    assert_eq!(ctx.visibility, "private", "explicit stamp wins");
+    assert!(ctx.owner_groups.is_empty());
+}
+
+/// GUARD 2 at the store level: an unconfigured workspace (ws_default None)
+/// keeps the ruled born-empty honest-private for group-less callers.
+#[tokio::test]
+async fn unconfigured_workspace_keeps_honest_private_at_store_level() {
+    use pdt::service::{AssetService, Services};
+
+    let services = setup_services().await;
+    let created = AssetService::create(
+        &services,
+        common::make_asset_request_with_tags("unconfigured issue", "body", vec![("type", "issue")]),
+        "agent-direct-caller",
+        &[],
+        None,
+        Some("unconfigured-ws"),
+    )
+    .await
+    .expect("band-less issue create");
+    let ctx = created.auth_context.expect("guarded birth context");
+    assert_eq!(ctx.visibility, "private");
+    assert!(ctx.owner_groups.is_empty());
 }

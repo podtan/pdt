@@ -236,3 +236,187 @@ pub async fn list_instance_sizes(
             .collect(),
     )
 }
+
+// ============================================================================
+// WORKSPACE DEFAULT BAND (ca989667 — the pdt-side create cohort grant)
+// ============================================================================
+//
+// The EXPLICIT per-workspace admin surface (CPO guard 3): the default band
+// exists only because an admin put it there — never a global default, never
+// implicit, never inherited from a parent workspace. The config lives NEXT
+// TO the instance's own pdt.db (default_band.json in the band directory),
+// so a child store reads only its own policy. All three verbs are
+// platform-admin gated: the config changes birth authz semantics for every
+// future band-less collaboration create in the store.
+
+/// The workspace default band payload (write body / read response).
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct WorkspaceDefaultBandBody {
+    /// Default visibility for band-less collaboration creates. "team" only.
+    pub visibility: String,
+    /// Default cohort groups (group-membership forms only).
+    pub owner_groups: Vec<String>,
+}
+
+/// Admin check shared by the default-band surface (same custody rule as
+/// the adopt handler: platform-admin only).
+fn require_platform_admin(user: &crate::auth::AuthenticatedUser) -> crate::error::Result<()> {
+    let claims = crate::handlers::assets::extract_claims(user);
+    let is_platform_admin = claims
+        .extra
+        .get("role")
+        .map(|r| match r {
+            serde_json::Value::String(s) => s == "admin",
+            serde_json::Value::Array(arr) => {
+                arr.iter().filter_map(|v| v.as_str()).any(|s| s == "admin")
+            }
+            _ => false,
+        })
+        .unwrap_or(false);
+    if !is_platform_admin {
+        return Err(crate::error::ApiError::Forbidden(
+            "Access denied: the workspace default band is platform-admin only (ca989667 guard 3)"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Configure the workspace default band for an instance (ca989667 guard 3 —
+/// the EXPLICIT per-workspace admin action). Validates the band shape
+/// (team + non-empty cohort), requires the instance to be provisioned, and
+/// writes the store-side config atomically. Takes effect on the NEXT
+/// band-less collaboration create; existing rows are never touched.
+#[utoipa::path(
+    put,
+    path = "/api/instances/{instance_id}/default-band",
+    params(
+        ("instance_id" = String, Path, description = "Instance ID (UUID) to configure"),
+    ),
+    request_body = WorkspaceDefaultBandBody,
+    responses(
+        (status = 200, description = "Default band configured", body = WorkspaceDefaultBandBody),
+        (status = 400, description = "Invalid instance id or invalid band shape"),
+        (status = 403, description = "Platform-admin only"),
+        (status = 404, description = "Instance not provisioned"),
+    ),
+    tag = "instances",
+)]
+pub async fn put_instance_default_band(
+    State(manager): State<TenantPoolManager>,
+    user: crate::auth::AuthenticatedUser,
+    Path(instance_id): Path<String>,
+    Json(body): Json<WorkspaceDefaultBandBody>,
+) -> crate::error::Result<Json<WorkspaceDefaultBandBody>> {
+    require_platform_admin(&user)?;
+    let band = crate::models::WorkspaceDefaultBand {
+        visibility: body.visibility,
+        owner_groups: body.owner_groups,
+    };
+    manager
+        .write_default_band(&instance_id, &band)
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("not a UUID")
+                || msg.contains("visibility must be")
+                || msg.contains("owner_groups must")
+                || msg.contains("entries must be")
+            {
+                crate::error::ApiError::BadRequest(msg)
+            } else if msg.contains("not provisioned") {
+                crate::error::ApiError::NotFound(msg)
+            } else {
+                crate::error::ApiError::Internal(format!("default band write failed: {msg}"))
+            }
+        })?;
+    Ok(Json(WorkspaceDefaultBandBody {
+        visibility: band.visibility,
+        owner_groups: band.owner_groups,
+    }))
+}
+
+/// Read the workspace default band for an instance (admin-gated read-back
+/// for verify flows). 404 when unconfigured — an absent config IS the
+/// unconfigured state (the ruled honest-private semantics stand).
+#[utoipa::path(
+    get,
+    path = "/api/instances/{instance_id}/default-band",
+    params(
+        ("instance_id" = String, Path, description = "Instance ID (UUID) to read"),
+    ),
+    responses(
+        (status = 200, description = "The configured default band", body = WorkspaceDefaultBandBody),
+        (status = 403, description = "Platform-admin only"),
+        (status = 404, description = "Not configured (or instance not provisioned)"),
+    ),
+    tag = "instances",
+)]
+pub async fn get_instance_default_band(
+    State(manager): State<TenantPoolManager>,
+    user: crate::auth::AuthenticatedUser,
+    Path(instance_id): Path<String>,
+) -> crate::error::Result<Json<WorkspaceDefaultBandBody>> {
+    require_platform_admin(&user)?;
+    match manager.read_default_band(&instance_id).await {
+        Ok(Some(band)) => Ok(Json(WorkspaceDefaultBandBody {
+            visibility: band.visibility,
+            owner_groups: band.owner_groups,
+        })),
+        Ok(None) => Err(crate::error::ApiError::NotFound(format!(
+            "No default band configured for instance {instance_id} (born-empty honest-private stands)"
+        ))),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("not a UUID") {
+                Err(crate::error::ApiError::BadRequest(msg))
+            } else if msg.contains("not provisioned") {
+                Err(crate::error::ApiError::NotFound(msg))
+            } else {
+                Err(crate::error::ApiError::Internal(format!(
+                    "default band read failed: {msg}"
+                )))
+            }
+        }
+    }
+}
+
+/// Remove the workspace default band (back to the ruled honest-private
+/// semantics for future band-less collaboration creates). Idempotent.
+#[utoipa::path(
+    delete,
+    path = "/api/instances/{instance_id}/default-band",
+    params(
+        ("instance_id" = String, Path, description = "Instance ID (UUID) to unconfigure"),
+    ),
+    responses(
+        (status = 200, description = "Whether a config was removed", body = serde_json::Value),
+        (status = 403, description = "Platform-admin only"),
+        (status = 404, description = "Instance not provisioned"),
+    ),
+    tag = "instances",
+)]
+pub async fn delete_instance_default_band(
+    State(manager): State<TenantPoolManager>,
+    user: crate::auth::AuthenticatedUser,
+    Path(instance_id): Path<String>,
+) -> crate::error::Result<Json<serde_json::Value>> {
+    require_platform_admin(&user)?;
+    let removed = manager
+        .delete_default_band(&instance_id)
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("not a UUID") {
+                crate::error::ApiError::BadRequest(msg)
+            } else if msg.contains("not provisioned") {
+                crate::error::ApiError::NotFound(msg)
+            } else {
+                crate::error::ApiError::Internal(format!("default band delete failed: {msg}"))
+            }
+        })?;
+    Ok(Json(serde_json::json!({
+        "removed": removed,
+        "instance_id": instance_id,
+    })))
+}

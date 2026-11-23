@@ -14,7 +14,10 @@ pub mod roles_service;
 mod search_service;
 
 pub use asset_service::guard_birth_auth_context;
-pub use asset_service::AssetService;
+pub use asset_service::{
+    apply_workspace_default_band, is_bandless_create, resolve_birth_auth_context,
+    workspace_default_applies, AssetService, COLLABORATION_TYPES,
+};
 pub use audit_service::AuditService;
 pub use collection_service::CollectionService;
 pub use directory_service::DirectoryService;

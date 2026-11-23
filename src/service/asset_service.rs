@@ -6,9 +6,118 @@ use serde_json::json;
 use crate::error::{ApiError, Result};
 use crate::models::{
     AddTagRequest, AdoptAssetRequest, Asset, AuditAction, AuthContext, CreateAssetRequest,
-    MergeMetadataRequest, Tag, UpdateAssetRequest, UpdateAuthContextRequest,
+    MergeMetadataRequest, Tag, UpdateAssetRequest, UpdateAuthContextRequest, WorkspaceDefaultBand,
 };
 use crate::service::Services;
+
+/// The collaboration record types the workspace default band applies to
+/// (ca989667 — the pdt-side create cohort grant). These are the board-facing
+/// record types born by caller layers (nghr stamps exactly these type tag
+/// values: issue, issue_response, task, document). Non-collaboration types
+/// (concepts, ideas, notes, …) keep the ruled born-empty semantics even in a
+/// configured workspace — the grant is a collaboration-cohort policy, not a
+/// store-wide default.
+pub const COLLABORATION_TYPES: [&str; 4] = ["issue", "issue_response", "task", "document"];
+
+/// True when a create arrives BAND-LESS (ca989667 guard 1): no auth_context
+/// at all, or an auth_context with BOTH visibility and owner_groups empty.
+/// Any explicit stamp — visibility alone, groups alone, or both — makes the
+/// create NOT band-less, and the workspace default never applies (explicit
+/// stamps always win; the guard ladder fills partial stamps as before).
+pub fn is_bandless_create(requested: Option<&AuthContext>) -> bool {
+    match requested {
+        None => true,
+        Some(ctx) => ctx.visibility.is_empty() && ctx.owner_groups.is_empty(),
+    }
+}
+
+/// True when the workspace default band may apply to this create: band-less
+/// AND a collaboration record type. The config read (I/O) is gated on this
+/// predicate — a fully-stamped or non-collaboration create never touches
+/// the filesystem for policy.
+pub fn workspace_default_applies(
+    requested: Option<&AuthContext>,
+    asset_type: Option<&str>,
+) -> bool {
+    is_bandless_create(requested)
+        && asset_type
+            .map(|t| COLLABORATION_TYPES.contains(&t))
+            .unwrap_or(false)
+}
+
+/// Apply the workspace default band to a GUARDED birth auth_context
+/// (ca989667 — CPO GO 2026-11-23, four guards):
+/// - fires ONLY on band-less collaboration creates (guard 1 — explicit
+///   stamps always win; `requested` is the PRE-guard caller input);
+/// - fires ONLY when a default is configured (guard 2 — unconfigured
+///   workspaces keep the ruled born-empty honest-private untouched);
+/// - the configured band is the explicit per-workspace admin action's
+///   product (guard 3 — never global, never implicit, never inherited);
+/// - the caller records the application in the audit log (guard 4 — the
+///   `applied` flag drives the audit enrichment).
+///
+/// Precedence at birth: explicit stamp > workspace default > caller-groups
+/// implicit fill > honest private. The workspace default overrides the
+/// guard ladder's implicit caller-groups fill because the admin-configured
+/// band IS the workspace's declared policy for band-less collaboration
+/// creates — the same shape the nghr caller layer stamps on its own
+/// creates (a0c08dc1 executing cb11a8e0), now hosted in pdt for callers
+/// with no nghr layer.
+///
+/// Returns the (possibly unchanged) context plus whether the default was
+/// APPLIED (for the audit record — ca989667 guard 4).
+pub fn apply_workspace_default_band(
+    guarded: AuthContext,
+    requested: Option<&AuthContext>,
+    asset_type: Option<&str>,
+    ws_default: Option<&WorkspaceDefaultBand>,
+) -> (AuthContext, bool) {
+    let Some(default) = ws_default else {
+        return (guarded, false);
+    };
+    if !workspace_default_applies(requested, asset_type) {
+        return (guarded, false);
+    }
+    // Defensive re-validation at the application site: an invalid band is
+    // treated as unconfigured (fail toward the ruled honest-private
+    // semantics — never widen visibility on a broken policy).
+    if default.validate().is_err() {
+        tracing::warn!(
+            "WORKSPACE DEFAULT BAND (ca989667): configured band failed validation at \
+             application — treating the workspace as unconfigured"
+        );
+        return (guarded, false);
+    }
+    let mut ctx = guarded;
+    ctx.visibility = default.visibility.clone();
+    ctx.owner_groups = default.owner_groups.clone();
+    (ctx, true)
+}
+
+/// Compose the FULL birth auth_context for a create: the born-empty guard
+/// ladder (0e583f06) followed by the workspace default band (ca989667).
+/// Single source of truth for both the Cedar pre-write probe and the
+/// service-layer persist — the consult must see exactly what the store
+/// will persist. Returns the context plus whether the workspace default
+/// was applied (audit enrichment, guard 4).
+pub fn resolve_birth_auth_context(
+    requested: Option<AuthContext>,
+    caller_groups: &[String],
+    asset_type: Option<&str>,
+    ws_default: Option<&WorkspaceDefaultBand>,
+    user_id: &str,
+) -> (AuthContext, bool) {
+    let guarded = guard_birth_auth_context(requested.clone(), caller_groups, user_id);
+    apply_workspace_default_band(guarded, requested.as_ref(), asset_type, ws_default)
+}
+
+/// Extract the asset type tag value from a create request's tags (the
+/// category="type" tag — the same attribute the Cedar entity builder reads).
+fn asset_type_from_tags(tags: &[AddTagRequest]) -> Option<String> {
+    tags.iter()
+        .find(|t| t.category == "type")
+        .map(|t| t.value.clone())
+}
 
 /// GUARD (issue 0e583f06, born-masked class): empty visibility+owner_groups
 /// must be unrepresentable at birth. An asset stored with visibility=""
@@ -74,42 +183,66 @@ pub fn guard_birth_auth_context(
 pub struct AssetService;
 
 impl AssetService {
-    /// Create a new asset with validation and the born-empty guard (0e583f06)
+    /// Create a new asset with validation, the born-empty guard (0e583f06)
+    /// and the workspace default band (ca989667).
+    ///
+    /// `ws_default` is the configured workspace default band for the store
+    /// this create lands in (resolved by the handler from the store-side
+    /// config; None = unconfigured or non-applicable). `workspace_id` is
+    /// the instance the create lands in (for the audit record).
     pub async fn create(
         services: &Services,
         request: CreateAssetRequest,
         user_id: &str,
         caller_groups: &[String],
+        ws_default: Option<&WorkspaceDefaultBand>,
+        workspace_id: Option<&str>,
     ) -> Result<Asset> {
         // Validate request
         if request.title.trim().is_empty() {
             return Err(ApiError::Validation("Title cannot be empty".to_string()));
         }
 
-        // BORN-EMPTY GUARD (0e583f06): empty visibility+owner_groups is
-        // unrepresentable — default to the caller's cohort band (or an honest
-        // private) before the repository stores the black-hole "" state.
-        let guarded_ctx =
-            guard_birth_auth_context(request.auth_context.clone(), caller_groups, user_id);
+        // BIRTH AUTH CONTEXT (0e583f06 + ca989667): the guard ladder
+        // defaults an empty band (caller cohort or honest private), then
+        // the workspace default band overrides band-less collaboration
+        // creates in a configured workspace. Explicit stamps always win.
+        let asset_type = asset_type_from_tags(&request.tags);
+        let (final_ctx, default_applied) = resolve_birth_auth_context(
+            request.auth_context.clone(),
+            caller_groups,
+            asset_type.as_deref(),
+            ws_default,
+            user_id,
+        );
         let mut guarded = request.clone();
-        guarded.auth_context = Some(guarded_ctx);
+        guarded.auth_context = Some(final_ctx);
 
         // Create asset
         let asset = services.assets().create(guarded, user_id).await?;
 
-        // Create audit entry
+        // Create audit entry. When the workspace default band applied, the
+        // record names the workspace + the band applied (ca989667 guard 4)
+        // so any future verify can reconstruct provenance.
+        let mut details = json!({
+            "title": asset.title,
+            "tags": asset.tags.len(),
+        });
+        if default_applied {
+            if let Some(band) = ws_default {
+                details["birth_band_source"] = json!("workspace_default_band");
+                if let Some(ws) = workspace_id {
+                    details["workspace_id"] = json!(ws);
+                }
+                details["default_band"] = json!({
+                    "visibility": band.visibility,
+                    "owner_groups": band.owner_groups,
+                });
+            }
+        }
         services
             .audit()
-            .create(
-                "asset",
-                &asset.id,
-                AuditAction::Create,
-                json!({
-                    "title": asset.title,
-                    "tags": asset.tags.len(),
-                }),
-                user_id,
-            )
+            .create("asset", &asset.id, AuditAction::Create, details, user_id)
             .await?;
 
         Ok(asset)
@@ -747,6 +880,214 @@ mod born_empty_guard_tests {
         let ctx = guard_birth_auth_context(None, &groups(&["developers"]), "dev-user-id");
         assert_eq!(ctx.visibility, "team");
         assert_eq!(ctx.owner_groups, groups(&["developers"]));
+    }
+}
+
+#[cfg(test)]
+mod workspace_default_band_tests {
+    use super::*;
+
+    fn groups(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn cohort_band() -> WorkspaceDefaultBand {
+        WorkspaceDefaultBand {
+            visibility: "team".to_string(),
+            owner_groups: groups(&["plt-agents@idp.tanbal.ir", "plt-agents"]),
+        }
+    }
+
+    fn issue_request() -> CreateAssetRequest {
+        CreateAssetRequest {
+            title: "board issue".to_string(),
+            content: None,
+            tags: vec![AddTagRequest {
+                category: "type".to_string(),
+                value: "issue".to_string(),
+            }],
+            metadata: Default::default(),
+            auth_context: None,
+        }
+    }
+
+    // ── GUARD 1: band-less creates ONLY — explicit stamps always win ──
+
+    #[test]
+    fn explicit_visibility_stamp_wins_over_workspace_default() {
+        let req = CreateAssetRequest {
+            auth_context: Some(AuthContext {
+                visibility: "private".to_string(),
+                owner_groups: vec![],
+                confidentiality: String::new(),
+            }),
+            ..issue_request()
+        };
+        let (ctx, applied) = resolve_birth_auth_context(
+            req.auth_context.clone(),
+            &[],
+            Some("issue"),
+            Some(&cohort_band()),
+            "agent",
+        );
+        assert!(!applied);
+        assert_eq!(ctx.visibility, "private");
+        assert!(ctx.owner_groups.is_empty());
+    }
+
+    #[test]
+    fn explicit_owner_groups_stamp_wins_over_workspace_default() {
+        // A partial explicit stamp (groups only) is STILL explicit — the
+        // guard ladder fills visibility=team from it; the default never merges.
+        let req = CreateAssetRequest {
+            auth_context: Some(AuthContext {
+                visibility: String::new(),
+                owner_groups: groups(&["devs@idp.tanbal.ir"]),
+                confidentiality: String::new(),
+            }),
+            ..issue_request()
+        };
+        let (ctx, applied) = resolve_birth_auth_context(
+            req.auth_context.clone(),
+            &[],
+            Some("issue"),
+            Some(&cohort_band()),
+            "agent",
+        );
+        assert!(!applied);
+        assert_eq!(ctx.visibility, "team");
+        assert_eq!(ctx.owner_groups, groups(&["devs@idp.tanbal.ir"]));
+    }
+
+    #[test]
+    fn workspace_default_overrides_bandless_create() {
+        // THE forward-class fix: agent-direct band-less issue create in a
+        // configured workspace → the configured cohort band (not private).
+        let (ctx, applied) =
+            resolve_birth_auth_context(None, &[], Some("issue"), Some(&cohort_band()), "agent");
+        assert!(applied);
+        assert_eq!(ctx.visibility, "team");
+        assert_eq!(
+            ctx.owner_groups,
+            groups(&["plt-agents@idp.tanbal.ir", "plt-agents"])
+        );
+    }
+
+    #[test]
+    fn workspace_default_overrides_caller_groups_implicit_fill() {
+        // Band-less + caller WITH groups in a CONFIGURED workspace: the
+        // admin-configured band is the workspace's declared policy for
+        // band-less collaboration creates — it overrides the implicit
+        // caller-groups fill (explicit > configured > implicit > private).
+        let (ctx, applied) = resolve_birth_auth_context(
+            None,
+            &groups(&["pdt_admins@idp.tanbal.ir"]),
+            Some("issue"),
+            Some(&cohort_band()),
+            "human-admin",
+        );
+        assert!(applied);
+        assert_eq!(
+            ctx.owner_groups,
+            groups(&["plt-agents@idp.tanbal.ir", "plt-agents"])
+        );
+    }
+
+    // ── GUARD 2: unconfigured workspaces keep honest-private untouched ──
+
+    #[test]
+    fn unconfigured_workspace_keeps_honest_private() {
+        let (ctx, applied) = resolve_birth_auth_context(None, &[], Some("issue"), None, "agent");
+        assert!(!applied);
+        assert_eq!(ctx.visibility, "private");
+        assert!(ctx.owner_groups.is_empty());
+    }
+
+    #[test]
+    fn unconfigured_workspace_keeps_caller_groups_fill() {
+        // No config → the 0e583f06 ladder stands byte-for-byte.
+        let (ctx, applied) =
+            resolve_birth_auth_context(None, &groups(&["developers"]), Some("issue"), None, "dev");
+        assert!(!applied);
+        assert_eq!(ctx.visibility, "team");
+        assert_eq!(ctx.owner_groups, groups(&["developers"]));
+    }
+
+    // ── Collaboration-type scoping ──
+
+    #[test]
+    fn non_collaboration_type_never_gets_the_default() {
+        for t in ["concept", "idea", "note", "instance"] {
+            let (ctx, applied) =
+                resolve_birth_auth_context(None, &[], Some(t), Some(&cohort_band()), "agent");
+            assert!(!applied, "type {t} must never receive the default");
+            assert_eq!(ctx.visibility, "private");
+        }
+    }
+
+    #[test]
+    fn all_collaboration_types_receive_the_default() {
+        for t in COLLABORATION_TYPES {
+            let (ctx, applied) =
+                resolve_birth_auth_context(None, &[], Some(t), Some(&cohort_band()), "agent");
+            assert!(applied, "type {t} must receive the default");
+            assert_eq!(ctx.visibility, "team");
+        }
+    }
+
+    #[test]
+    fn missing_type_tag_never_gets_the_default() {
+        let (ctx, applied) = resolve_birth_auth_context(None, &[], None, Some(&cohort_band()), "a");
+        assert!(!applied);
+        assert_eq!(ctx.visibility, "private");
+    }
+
+    // ── GUARD 3 defense: invalid band treated as unconfigured ──
+
+    #[test]
+    fn invalid_band_fails_toward_unconfigured() {
+        let bad = WorkspaceDefaultBand {
+            visibility: "public".to_string(),
+            owner_groups: groups(&["world"]),
+        };
+        let (ctx, applied) =
+            resolve_birth_auth_context(None, &[], Some("issue"), Some(&bad), "agent");
+        assert!(!applied);
+        assert_eq!(ctx.visibility, "private");
+    }
+
+    // ── Predicate (the I/O gate) ──
+
+    #[test]
+    fn bandless_predicate_shapes() {
+        assert!(is_bandless_create(None));
+        assert!(is_bandless_create(Some(&AuthContext::default())));
+        assert!(!is_bandless_create(Some(&AuthContext {
+            visibility: "team".to_string(),
+            ..Default::default()
+        })));
+        assert!(!is_bandless_create(Some(&AuthContext {
+            owner_groups: groups(&["x"]),
+            ..Default::default()
+        })));
+    }
+
+    #[test]
+    fn applies_predicate_gates_the_config_read() {
+        // Band-less + collab → the handler reads the config (I/O gated here).
+        assert!(workspace_default_applies(None, Some("issue")));
+        assert!(workspace_default_applies(None, Some("issue_response")));
+        assert!(workspace_default_applies(None, Some("task")));
+        assert!(workspace_default_applies(None, Some("document")));
+        // Anything else → no config read, no application.
+        assert!(!workspace_default_applies(None, Some("concept")));
+        assert!(!workspace_default_applies(
+            Some(&AuthContext {
+                visibility: "private".to_string(),
+                ..Default::default()
+            }),
+            Some("issue")
+        ));
     }
 }
 
