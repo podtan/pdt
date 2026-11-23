@@ -99,8 +99,22 @@ impl AuditRepository for SqliteAuditRepository {
         if user_id.is_some() {
             query_str.push_str(" AND user_id = ?");
         }
-        if cursor.is_some() {
-            query_str.push_str(" AND id < ?");
+        // Keyset pagination on the SORT KEY (timestamp DESC, id DESC) — the
+        // same `timestamp|id` compound-cursor form the asset list uses. The
+        // previous cursor filtered `id < ?` (a lexicographic UUID compare)
+        // against a timestamp-ordered walk: random ids made each page an
+        // arbitrary subset (duplicate rows across pages, gaps, and spurious
+        // early exhaustion when the cursor id sorted low) — an unfiltered
+        // audit walk silently truncated + duplicated (the measurement
+        // artifact behind the false "fame write-path coverage gap" premise,
+        // issue 3efb7982). Bare-id cursors (pre-fix form) keep the legacy
+        // filter for in-flight paginations across a deploy.
+        if let Some(c) = cursor {
+            if c.contains('|') {
+                query_str.push_str(" AND (timestamp < ? OR (timestamp = ? AND id < ?))");
+            } else {
+                query_str.push_str(" AND id < ?");
+            }
         }
 
         query_str.push_str(" ORDER BY timestamp DESC, id DESC LIMIT ?");
@@ -117,7 +131,11 @@ impl AuditRepository for SqliteAuditRepository {
             q = q.bind(ui);
         }
         if let Some(c) = cursor {
-            q = q.bind(c);
+            if let Some((ts, id)) = c.split_once('|') {
+                q = q.bind(ts).bind(ts).bind(id);
+            } else {
+                q = q.bind(c);
+            }
         }
 
         let rows = q.bind(limit + 1).fetch_all(&self.pool).await?;
@@ -139,7 +157,9 @@ impl AuditRepository for SqliteAuditRepository {
 
         let next_cursor = if entries.len() > limit as usize {
             entries.pop();
-            entries.last().map(|e| e.id.clone())
+            entries
+                .last()
+                .map(|e| format!("{}|{}", e.timestamp.to_rfc3339(), e.id))
         } else {
             None
         };

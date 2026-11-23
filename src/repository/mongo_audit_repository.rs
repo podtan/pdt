@@ -68,8 +68,35 @@ impl AuditRepository for MongoAuditRepository {
             filter.insert("user_id", ui);
         }
 
+        // Keyset pagination on the SORT KEY (timestamp DESC, _id DESC) — the
+        // same `timestamp|id` compound-cursor form the asset list uses (and
+        // the sqlite audit repository now mirrors). The previous cursor
+        // filtered `_id < cursor` against a timestamp-ordered walk: random
+        // ids made each page an arbitrary subset (duplicate rows, gaps,
+        // spurious early exhaustion). Bare-id cursors (pre-fix form) keep
+        // the legacy filter for in-flight paginations across a deploy; an
+        // unparseable timestamp in a compound cursor degrades to the same
+        // legacy filter rather than failing the walk.
         if let Some(c) = cursor {
-            filter.insert("_id", doc! { "$lt": c });
+            match c.split_once('|').and_then(|(ts, id)| {
+                chrono::DateTime::parse_from_rfc3339(ts)
+                    .ok()
+                    .map(|dt| (dt.with_timezone(&Utc), id.to_string()))
+            }) {
+                Some((ts, id)) => {
+                    let ts_bson = bson::DateTime::from(ts);
+                    filter.insert(
+                        "$or",
+                        vec![
+                            doc! { "timestamp": { "$lt": ts_bson } },
+                            doc! { "timestamp": ts_bson, "_id": { "$lt": id } },
+                        ],
+                    );
+                }
+                None => {
+                    filter.insert("_id", doc! { "$lt": c });
+                }
+            }
         }
 
         let options = mongodb::options::FindOptions::builder()
@@ -86,7 +113,9 @@ impl AuditRepository for MongoAuditRepository {
 
         let next_cursor = if entries.len() > limit as usize {
             entries.pop();
-            entries.last().map(|e| e.id.clone())
+            entries
+                .last()
+                .map(|e| format!("{}|{}", e.timestamp.to_rfc3339(), e.id))
         } else {
             None
         };
